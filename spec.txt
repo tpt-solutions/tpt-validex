@@ -1,0 +1,638 @@
+# Design Specification: `tpt-validex`
+
+**Status:** Draft / RFC  
+**Project:** `tpt-validex` (Universal High-Performance Data Validator)  
+**Ecosystem:** TPT Solutions  
+**License:** Dual-licensed MIT / Apache-2.0  
+**Date:** September 2026  
+
+---
+
+## 1. Executive Summary
+
+`tpt-validex` is a blazing-fast, universal, embeddable data validation engine written in pure Rust with a **minimal dependency philosophy** and **Apache-2.0-only dependency prohibition**.
+
+Currently, every API, data pipeline, and application needs to validate incoming data (JSON payloads, CSV rows, user input, database records). But the existing solutions have major problems:
+- **Python (`pydantic`, `jsonschema`):** Slow for bulk validation. `pydantic` is great for single objects, but validating 1 million JSON records takes seconds.
+- **JavaScript (`zod`, `ajv`):** Runtime overhead. `zod` is ergonomic but slow. `ajv` is fast but JS-only.
+- **Rust (`valico`, `jsonschema`):** Pull in many dependencies. Not optimized for streaming validation.
+- **Language-specific:** You need a different validator for Python, Node.js, Go, Rust. Each has different APIs and behaviors.
+
+`tpt-validex` solves this by providing a single, embeddable validation engine that:
+- Validates millions of records per second using SIMD-optimized JSON parsing.
+- Compiles schemas to state machines for O(1) validation overhead.
+- Works identically across Python, JavaScript, Go, C++, and Rust.
+- Supports JSON Schema (Draft 2020-12), custom DSL schemas, and streaming validation.
+- Integrates seamlessly with `tpt-streamforge` for ETL pipeline validation.
+
+**Key differentiator:** We reject heavy validation frameworks and Apache-2.0-only dependencies. We build our own minimal, SIMD-optimized schema compiler that turns validation rules into blazing-fast state machines.
+
+## 2. Core Design Principles
+
+1. **Strict MIT / Apache-2.0 Licensing:** All code is dual-licensed MIT / Apache-2.0. All dependencies are audited via `cargo-deny`. Any dependency carrying a copyleft license is strictly rejected.
+2. **Apache-2.0-Only Dependencies Prohibited:** Dependencies that are Apache-2.0-only (not dual-licensed with MIT) are strictly rejected. We prefer MIT-only or MIT/Apache-2.0 dual-licensed dependencies. When no suitable MIT-licensed dependency exists, we build our own implementation.
+3. **Minimal Dependency Tree:** We avoid heavy validation frameworks. The `jsonschema` crate is rejected due to its large transitive dependency tree. We build our own schema compiler.
+4. **SIMD-Optimized Parsing:** Uses SIMD instructions (via `sonic-rs`, MIT-licensed) for JSON parsing. Achieves 10x faster parsing than `serde_json` for large payloads.
+5. **Schema Compilation:** Schemas are compiled to state machines at load time. Validation is O(1) per field, not O(n) per rule.
+6. **Streaming Validation:** Can validate CSV, JSON, JSONL in streaming fashion without loading entire files into memory.
+7. **Multi-Language Native:** Pure Rust core with clean C ABI. Wrappers for Python, JavaScript/WASM, Go, and C/C++.
+8. **Zero-Copy Where Possible:** Validates data without copying it. Passes raw pointers to the validator.
+
+---
+
+## 3. Licensing Strategy & Dependency Audit
+
+### 3.1 License Model
+
+`tpt-validex` is dual-licensed under **MIT** and **Apache-2.0**, at the user's option.
+
+### 3.2 Dependency Audit Pipeline
+
+All dependency licensing is enforced automatically via `cargo-deny` in CI:
+
+[licenses]
+allow = [
+"MIT",
+"Apache-2.0",
+"BSD-2-Clause",
+"BSD-3-Clause",
+"ISC",
+"Zlib",
+"Unicode-DFS-2016",
+]
+deny = [
+"GPL-2.0",
+"GPL-3.0",
+"LGPL-2.1",
+"LGPL-3.0",
+"AGPL-3.0",
+"SSPL-1.0",
+"EUPL-1.1",
+"EUPL-1.2",
+"MPL-2.0",
+]
+unlicensed = "deny"
+copyleft = "deny"
+Apache-2.0-only dependencies require explicit review
+We prefer MIT or MIT/Apache-2.0 dual-licensed
+[[licenses.clarify]]
+name = "simd-json"
+expression = "Apache-2.0"
+→ This would be flagged for review since it's Apache-2.0 only
+
+
+### 3.3 Rejected Dependencies & Replacements
+
+| Rejected Dependency | Reason | Replacement Strategy |
+| :--- | :--- | :--- |
+| `simd-json` | **Apache-2.0 only**. Not dual-licensed with MIT. | **Use `sonic-rs` (MIT) instead.** |
+| `jsonschema` (Rust crate) | Pulls in many dependencies. Not optimized for streaming. | **Build our own schema compiler from scratch.** |
+| `pydantic` (Python) | Slow for bulk validation. Python-only. | **Use our Rust core via PyO3.** |
+| `zod` (JavaScript) | Runtime overhead. JS-only. | **Use our Rust core via WASM.** |
+| `ajv` (JavaScript) | Fast but JS-only. Not embeddable in Rust. | **Use our Rust core via WASM.** |
+| `valico` (Rust) | Has many dependencies. Not SIMD-optimized. | **Build our own minimal validator.** |
+
+### 3.4 Approved Dependencies (Minimal Set, All MIT or Dual-Licensed)
+
+| Dependency | Purpose | License | Status |
+| :--- | :--- | :--- | :--- |
+| `sonic-rs` | SIMD-optimized JSON parsing | **MIT** | ✅ Approved (replaces Apache-2.0-only `simd-json`) |
+| `jiter` | Fast iterative JSON parsing (fallback) | **MIT** | ✅ Approved |
+| `serde` / `serde_json` | Serialization (fallback) | **MIT / Apache-2.0** | ✅ Approved (dual-licensed) |
+| `regex` | Regular expressions (for pattern validation) | **MIT / Apache-2.0** | ✅ Approved (dual-licensed) |
+| `chrono` | Date/time validation | **MIT / Apache-2.0** | ✅ Approved (dual-licensed) |
+| `pyo3` | Python bindings | **MIT / Apache-2.0** | ✅ Approved (dual-licensed) |
+| `wasm-bindgen` | WASM bindings | **MIT / Apache-2.0** | ✅ Approved (dual-licensed) |
+| `crossbeam` | Lock-free queues (for streaming) | **MIT / Apache-2.0** | ✅ Approved (dual-licensed) |
+| `rayon` | Parallel validation | **MIT / Apache-2.0** | ✅ Approved (dual-licensed) |
+
+### 3.5 Custom-Built Components (Zero External Dependencies)
+
+The following components are built entirely from scratch in pure Rust with no external dependencies:
+
+| Component | Description | Rationale |
+| :--- | :--- | :--- |
+| **Schema Compiler** | Parses JSON Schema and custom DSL, compiles to state machine | No good MIT-licensed alternative exists. Full control over performance. |
+| **State Machine Engine** | Tree of validation nodes, O(1) per-field validation | Core intellectual property. Must be blazing fast. |
+| **CSV Parser** | Streaming CSV parser with type inference | Avoid dependency on `csv` crate. Full control over streaming behavior. |
+| **JSONL Parser** | Streaming newline-delimited JSON parser | Avoid dependency on external JSONL libraries. |
+| **Format Validators** | Email, URI, date, date-time, UUID validation | Built-in implementations avoid external dependencies. |
+| **Error Reporter** | Structured error collection with JSON path | Custom implementation for optimal performance. |
+
+---
+
+## 4. Architecture Overview
+
+```text
+tpt-validex/
+├── Cargo.toml             # Workspace root with shared deny.toml
+├── deny.toml              # cargo-deny configuration
+├── LICENSE-MIT
+├── LICENSE-APACHE
+├── tpt-valid-core/        # Pure Rust. Schema compiler, state machine, validation engine.
+├── tpt-valid-schema/      # Schema parsing (JSON Schema, custom DSL).
+├── tpt-valid-parser/      # SIMD-optimized JSON/CSV/JSONL parsing (using sonic-rs, MIT).
+├── tpt-valid-ffi/         # C ABI boundary. Opaque handles, error codes.
+├── tpt-valid-py/          # PyO3 wrapper. Python integration.
+├── tpt-valid-wasm/        # wasm-bindgen wrapper. Browser/edge integration.
+├── tpt-valid-go/          # cgo wrapper. Go integration.
+└── tests/                 # Integration tests across all language boundaries.
+
+4.1 The Validation Pipeline
+
+┌──────────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+│  Schema      │────▶│  Schema      │────▶│  State       │────▶│  Validator   │
+│  (JSON/DSL)  │     │  Compiler    │     │  Machine     │     │  Engine      │
+└──────────────┘     └──────────────┘     └──────────────┘     └──────────────┘
+      │                    │                    │                    │
+      ▼                    ▼                    ▼                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  Schema: { "type": "object", "properties": { "age": { "type": "integer" }}} │
+│  ↓                                                                          │
+│  Compiled State Machine: [CheckType(Object), CheckField("age", Integer)]   │
+│  ↓                                                                          │
+│  Data: {"age": 25} → Validate → ✅ Valid                                    │
+│  Data: {"age": "25"} → Validate → ❌ Error: age must be integer             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+4.2 Schema Compilation Process
+
+1. User provides a schema (JSON Schema or custom DSL).
+2. Schema is parsed and validated (using custom parser, no external deps).
+3. Schema is compiled to an intermediate representation (IR).
+4. IR is optimized (e.g., merge redundant checks, pre-compute regex).
+5. IR is compiled to a state machine (a tree of validation nodes).
+6. State machine is cached for reuse.
+7. Validation: data is passed through the state machine, field by field.
+
+This compilation happens once at load time. Subsequent validations are O(1) per field.
+5. Key Components & Implementation Details
+5.1 Schema Compiler (tpt-valid-schema)
+Supported Schema Formats:
+JSON Schema (Draft 2020-12): Full support for type, properties, required, minimum, maximum, pattern, enum, format, etc.
+Custom DSL: A simpler, more ergonomic schema language for common use cases.
+Custom DSL Example:
+
+let schema = validex::schema! {
+    object {
+        required "name" => string(min_length=1, max_length=100),
+        required "age" => integer(min=0, max=150),
+        optional "email" => string(format="email"),
+        optional "tags" => array(items=string(), min_items=0, max_items=10),
+    }
+};
+
+Schema Compilation:
+Parses schema into an AST (custom parser, no external dependencies).
+Validates schema semantics (e.g., min must be <= max).
+Compiles AST to IR (intermediate representation).
+Optimizes IR (e.g., pre-compile regex patterns).
+Compiles IR to state machine (tree of validation nodes).
+5.2 State Machine (tpt-valid-core)
+The state machine is a tree of validation nodes:
+
+enum ValidationNode {
+    CheckType(DataType),
+    CheckField(String, Box<ValidationNode>),
+    CheckRequired(Vec<String>),
+    CheckMinimum(f64),
+    CheckMaximum(f64),
+    CheckPattern(Regex),
+    CheckEnum(Vec<Value>),
+    CheckFormat(Format),
+    CheckArray(Box<ValidationNode>, usize, usize),
+    CheckObject(Vec<(String, ValidationNode)>),
+}
+
+Validation Process:
+Start at root node.
+For each field in the data, traverse the tree.
+At each node, perform the check (e.g., CheckType(Integer)).
+If check fails, collect error and continue (to report all errors, not just the first).
+Return list of errors (empty if valid).
+Performance Optimization:
+State machine is compiled once, reused for all validations.
+Regex patterns are pre-compiled (using regex crate, MIT/Apache-2.0 dual-licensed).
+Enum checks use hash sets for O(1) lookup.
+Array/object checks are unrolled for small sizes.
+5.3 SIMD-Optimized Parser (tpt-valid-parser)
+JSON Parsing:
+Uses sonic-rs (MIT-licensed) for SIMD-accelerated parsing.
+Achieves 10x faster parsing than serde_json for large payloads.
+Falls back to jiter (MIT-licensed) if sonic-rs is unavailable.
+Falls back to serde_json (MIT/Apache-2.0 dual-licensed) as the guaranteed-compatible baseline.
+All JSON parsing dependencies are MIT-licensed or MIT/Apache-2.0 dual-licensed. No Apache-2.0-only dependencies.
+CSV Parsing:
+Custom streaming CSV parser (built from scratch, zero external dependencies).
+Handles quoted fields, custom delimiters, type inference.
+Validates each row against the schema.
+JSONL Parsing:
+Custom streaming parser (built from scratch, zero external dependencies).
+Validates each line independently.
+Reports errors with line numbers.
+5.4 Format Validators (Built from Scratch)
+All format validators are implemented in pure Rust with no external dependencies:
+Format
+Implementation
+Notes
+Email
+Custom RFC 5322 validator
+No external dependencies.
+URI/URL
+Custom RFC 3986 validator
+No external dependencies.
+Date
+Custom ISO 8601 validator
+Uses chrono (MIT/Apache-2.0) for parsing.
+Date-Time
+Custom ISO 8601 validator
+Uses chrono (MIT/Apache-2.0) for parsing.
+UUID
+Custom RFC 4122 validator
+No external dependencies.
+IPv4/IPv6
+Custom validators
+No external dependencies.
+5.5 Validation Engine (tpt-valid-core)
+Validation Modes:
+Single Object: Validate a single JSON object.
+Batch: Validate a list of objects in parallel (using rayon, MIT/Apache-2.0).
+Streaming: Validate a stream of objects (CSV, JSONL) without loading into memory.
+Error Reporting:
+Collects all errors, not just the first.
+Errors include: field path, expected type/value, actual value.
+Errors are structured (can be serialized to JSON).
+Example Error:
+
+{
+  "errors": [
+    {
+      "path": "$.age",
+      "message": "Expected integer, got string",
+      "expected": "integer",
+      "actual": "string",
+      "value": "25"
+    },
+    {
+      "path": "$.email",
+      "message": "Invalid email format",
+      "expected": "email",
+      "actual": "invalid-email"
+    }
+  ]
+}
+
+5.6 Streaming Validation (Integration with tpt-streamforge)
+tpt-validex can be used as a transformation stage in tpt-streamforge:
+
+use tpt_streamforge::Pipeline;
+use tpt_validex::Schema;
+
+let schema = Schema::from_json_schema(json_schema)?;
+
+let pipeline = Pipeline::new()
+    .read_csv("input.csv")
+    .validate(&schema)  // Validates each row, filters out invalid rows
+    .write_csv("valid_output.csv")
+    .write_errors("errors.jsonl");  // Writes validation errors to separate file
+
+pipeline.execute()?;
+
+This allows ETL pipelines to validate data on-the-fly, filtering out invalid records and logging errors.
+6. Target API Design (Developer Experience)
+6.1 Python API (via PyO3)
+
+from tpt_validex import Validator
+
+# Load a JSON Schema
+schema = {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "age": {"type": "integer", "minimum": 0, "maximum": 150},
+        "email": {"type": "string", "format": "email"}
+    },
+    "required": ["name", "age"]
+}
+
+validator = Validator(schema)
+
+# Validate a single object
+data = {"name": "Alice", "age": 30, "email": "alice@example.com"}
+is_valid, errors = validator.validate(data)
+print(f"Valid: {is_valid}, Errors: {errors}")
+
+# Validate a batch of objects (parallel)
+batch = [
+    {"name": "Alice", "age": 30},
+    {"name": "Bob", "age": "25"},  # Invalid: age is string
+    {"name": "", "age": 200},      # Invalid: name too short, age too high
+]
+results = validator.validate_batch(batch)
+for result in results:
+    print(f"Valid: {result.is_valid}, Errors: {result.errors}")
+
+# Validate a CSV file (streaming)
+validator.validate_csv("input.csv", valid_output="valid.csv", errors_output="errors.jsonl")
+
+6.2 JavaScript / Node.js API (via WASM)
+
+import { Validator } from 'tpt-validex';
+
+const schema = {
+  type: 'object',
+  properties: {
+    name: { type: 'string', minLength: 1 },
+    age: { type: 'integer', minimum: 0, maximum: 150 },
+  },
+  required: ['name', 'age'],
+};
+
+const validator = new Validator(schema);
+
+// Validate a single object
+const data = { name: 'Alice', age: 30 };
+const { isValid, errors } = validator.validate(data);
+console.log(`Valid: ${isValid}, Errors:`, errors);
+
+// Validate a batch
+const batch = [
+  { name: 'Alice', age: 30 },
+  { name: 'Bob', age: '25' },
+];
+const results = validator.validateBatch(batch);
+results.forEach(r => console.log(`Valid: ${r.isValid}, Errors:`, r.errors));
+
+6.3 Go API (via cgo)
+
+package main
+
+import (
+    "fmt"
+    "github.com/tpt-solutions/tpt-validex-go"
+)
+
+func main() {
+    schema := `{
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "age": {"type": "integer"}
+        },
+        "required": ["name", "age"]
+    }`
+
+    validator, err := validex.NewValidator(schema)
+    if err != nil {
+        panic(err)
+    }
+
+    data := map[string]interface{}{
+        "name": "Alice",
+        "age":  30,
+    }
+
+    isValid, errors := validator.Validate(data)
+    fmt.Printf("Valid: %v, Errors: %v\n", isValid, errors)
+}
+
+6.4 C API (via FFI)
+
+#include "tpt_validex.h"
+
+int main() {
+    const char* schema = "{\"type\": \"object\", \"properties\": {\"age\": {\"type\": \"integer\"}}}";
+    
+    tpt_valid_handle* validator = tpt_valid_create(schema);
+    
+    const char* data = "{\"age\": 25}";
+    tpt_valid_result* result = tpt_valid_validate(validator, data);
+    
+    if (tpt_valid_is_valid(result)) {
+        printf("Valid!\n");
+    } else {
+        printf("Invalid: %s\n", tpt_valid_get_errors(result));
+    }
+    
+    tpt_valid_free_result(result);
+    tpt_valid_destroy(validator);
+    return 0;
+}
+
+7. Performance & Resource Targets
+Metric
+Target
+Rationale
+Validation Throughput (JSON)
+> 5 million objects/sec
+10x faster than pydantic / zod.
+Validation Throughput (CSV)
+> 10 million rows/sec
+Streaming validation for ETL.
+Schema Compilation Time
+< 10 ms
+Fast startup, cached for reuse.
+Memory Usage
+< 50 MB (for 1M objects)
+Can validate large batches without OOM.
+Binary Size (Native)
+< 10 MB
+Easy to distribute.
+Binary Size (WASM)
+< 5 MB
+Fast download for browser/edge use.
+Dependency Count
+< 15 crates
+Minimal, auditable tree.
+Apache-2.0-Only Dependencies
+0
+Strict prohibition.
+8. Phased Rollout & Milestones
+Phase 1: Core Validation Engine (Pure Rust)
+Set up workspace with deny.toml and CI license auditing.
+Implement schema parser (JSON Schema Draft 2020-12) from scratch.
+Implement schema compiler (AST → IR → state machine).
+Implement basic validation nodes (type, required, min/max, pattern).
+Implement SIMD-optimized JSON parser (via sonic-rs, MIT-licensed).
+Verify full dependency tree passes cargo deny check licenses.
+Verify zero Apache-2.0-only dependencies in the entire tree.
+Phase 2: Advanced Validation Features
+Implement array validation (items, minItems, maxItems, uniqueItems).
+Implement object validation (properties, additionalProperties, patternProperties).
+Implement format validation (email, uri, date, date-time, uuid) from scratch.
+Implement enum validation.
+Implement conditional validation (if/then/else, allOf, anyOf, oneOf).
+Phase 3: Streaming & Batch Validation
+Implement batch validation (parallel via rayon).
+Implement streaming CSV validation (custom parser, no external deps).
+Implement streaming JSONL validation (custom parser, no external deps).
+Implement error collection (all errors, not just first).
+Phase 4: FFI & Python Wrapper
+Build tpt-valid-ffi with C ABI.
+Build tpt-valid-py using PyO3.
+Set up GitHub Actions to build and publish wheels to PyPI.
+Write Python documentation and examples.
+Phase 5: WASM Wrapper
+Build tpt-valid-wasm using wasm-bindgen.
+Optimize binary size with wasm-opt -Oz.
+Publish to npm.
+Write JavaScript documentation and examples.
+Phase 6: Go Wrapper
+Build tpt-valid-go using cgo.
+Write Go documentation and examples.
+Publish to Go module registry.
+Phase 7: Integration with tpt-streamforge
+Implement validate transformation stage for tpt-streamforge.
+Implement error output (write invalid rows to separate file).
+Write integration tests and examples.
+Phase 8: Advanced Features (Optional)
+Implement custom DSL for schemas (more ergonomic than JSON Schema).
+Implement schema validation (validate the schema itself).
+Implement schema diffing (compare two schemas).
+Implement schema migration (transform data from old schema to new).
+9. Open Questions & Risks
+JSON Schema Compliance: JSON Schema is complex. Full compliance with Draft 2020-12 is a large undertaking. Mitigation: Start with the most common features (type, properties, required, min/max, pattern). Add advanced features (if/then/else, allOf/anyOf/oneOf) in Phase 2. Document supported features clearly.
+SIMD Availability: SIMD is not available on all platforms (e.g., WASM). Mitigation: Fall back to jiter (MIT) or serde_json (MIT/Apache-2.0) if SIMD is not available. Document performance differences.
+Custom DSL vs. JSON Schema: Should we support both, or just one? Mitigation: Support JSON Schema for compatibility. Add custom DSL as an optional, more ergonomic alternative in Phase 8.
+Error Reporting: Should we report all errors, or stop at the first? Mitigation: Default to reporting all errors (more useful for debugging). Add a "fail-fast" mode for performance-critical use cases.
+Transitive Dependency Drift: A currently permissive dependency could add a copyleft or Apache-2.0-only transitive dependency. Mitigation: cargo-deny runs on every PR and every release tag. Pin dependency versions in Cargo.lock. Explicitly check for Apache-2.0-only dependencies.
+Integration with tpt-streamforge: How do we handle invalid rows in a streaming pipeline? Mitigation: Write invalid rows to a separate error file. Allow users to configure error handling (skip, abort, log).
+Custom Format Validators: Building email/URI/UUID validators from scratch is complex. Mitigation: Start with basic implementations. Use well-known test vectors to validate correctness. Add edge cases over time.
+10. Competitive Landscape
+Tool
+Strengths
+Weaknesses
+How tpt-validex Differs
+pydantic (Python)
+Familiar, rich ecosystem
+Slow for bulk validation, Python-only
+10x faster, multi-language
+zod (JavaScript)
+Ergonomic, popular
+Runtime overhead, JS-only
+10x faster, multi-language
+jsonschema (Python)
+JSON Schema compliant
+Very slow, Python-only
+100x faster, multi-language
+ajv (JavaScript)
+Fast, JSON Schema compliant
+JS-only, not embeddable
+Multi-language, embeddable
+valico (Rust)
+Rust-native
+Many dependencies, not SIMD-optimized
+Minimal deps, SIMD-optimized
+FastJSON (Java)
+Fast
+Java-only, not JSON Schema compliant
+Multi-language, JSON Schema compliant
+11. Success Metrics
+tpt-validex will be considered successful if:
+Licensing Compliance: Zero copyleft dependencies in the entire transitive tree, verified by cargo-deny on every commit.
+Apache-2.0-Only Prohibition: Zero Apache-2.0-only dependencies in the entire transitive tree. All dependencies are MIT-only or MIT/Apache-2.0 dual-licensed.
+Minimal Dependencies: Total dependency count < 15 crates.
+Adoption: > 10,000 monthly downloads on PyPI within 6 months of launch.
+Performance: 10x faster than pydantic for bulk JSON validation.
+Multi-Language: Successfully used in Python, JavaScript, Go, and C++ applications.
+Integration: Used as a validation stage in tpt-streamforge pipelines by at least 3 companies.
+Commercial Adoption: Used in production by at least 5 companies who chose it specifically because it's fast, embeddable, multi-language, and has a clean dependency tree.
+12. Marketing & Positioning
+Tagline: "Validate millions of records per second. One schema, every language. Zero Apache-2.0-only dependencies."
+Key Selling Points:
+Blazing Fast: 10x faster than pydantic / zod. SIMD-optimized JSON parsing.
+Universal: Works identically in Python, JavaScript, Go, C++, and Rust.
+JSON Schema Compliant: Full support for JSON Schema Draft 2020-12.
+Streaming Validation: Validate CSV, JSONL without loading into memory.
+Embeddable: < 10 MB binary. Zero external dependencies for core components.
+Clean Licensing: MIT/Apache-2.0 dual-licensed. No Apache-2.0-only dependencies.
+ETL Integration: Seamless integration with tpt-streamforge for data pipelines.
+Target Audience:
+API developers tired of slow validation in Python/JavaScript.
+Data engineers building ETL pipelines who need on-the-fly validation.
+SaaS companies processing millions of user-submitted records.
+Companies building multi-language microservices who need consistent validation.
+Privacy-focused applications who need client-side validation (via WASM).
+Companies with strict licensing requirements who cannot use Apache-2.0-only dependencies.
+13. Example Use Cases
+Use Case 1: API Request Validation
+
+from fastapi import FastAPI
+from tpt_validex import Validator
+
+app = FastAPI()
+
+schema = {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "age": {"type": "integer", "minimum": 0, "maximum": 150},
+    },
+    "required": ["name", "age"]
+}
+
+validator = Validator(schema)
+
+@app.post("/users")
+async def create_user(request: dict):
+    is_valid, errors = validator.validate(request)
+    if not is_valid:
+        return {"error": "Invalid data", "details": errors}
+    # ... create user
+
+Use Case 2: ETL Pipeline Validation
+
+from tpt_streamforge import Pipeline
+from tpt_validex import Validator
+
+schema = {"type": "object", "properties": {"age": {"type": "integer", "minimum": 0}}}
+validator = Validator(schema)
+
+pipeline = (
+    Pipeline()
+    .read_csv("users.csv")
+    .validate(validator, errors_output="invalid_users.jsonl")
+    .write_csv("valid_users.csv")
+)
+
+pipeline.execute()
+
+Use Case 3: Browser-Side Form Validation
+
+import { Validator } from 'tpt-validex';
+
+const schema = {
+  type: 'object',
+  properties: {
+    email: { type: 'string', format: 'email' },
+    password: { type: 'string', minLength: 8 },
+  },
+};
+
+const validator = new Validator(schema);
+
+document.getElementById('form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const data = {
+    email: document.getElementById('email').value,
+    password: document.getElementById('password').value,
+  };
+  
+  const { isValid, errors } = validator.validate(data);
+  if (!isValid) {
+    // Show errors to user
+    console.error('Validation errors:', errors);
+  } else {
+    // Submit form
+    e.target.submit();
+  }
+});
+
+16. Conclusion
+tpt-validex is a blazing-fast, universal data validation engine that:
+Validates millions of records per second.
+Works across Python, JavaScript, Go, C++, and Rust.
+Has a minimal, auditable dependency tree.
+Has zero Apache-2.0-only dependencies.
+Is MIT/Apache-2.0 dual-licensed for maximum compatibility.
+By building core components from scratch and carefully selecting dependencies, we've created a validation engine that is fast, embeddable, and legally clean.

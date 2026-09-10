@@ -1,0 +1,38 @@
+# Rust
+/target/
+Cargo.lock
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+dist/
+build/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+*.whl
+
+# Node / WASM
+node_modules/
+dist/
+*.tgz
+.npm/
+
+# Go
+*.test
+*.out
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Benchmarks output
+/benches/results/
+criterion/
