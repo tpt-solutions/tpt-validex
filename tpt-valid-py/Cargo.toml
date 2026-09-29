@@ -1,0 +1,27 @@
+[package]
+name = "tpt-valid-py"
+description = "Python bindings for tpt-validex (PyO3): Validator, batch and streaming CSV/JSONL validation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+name = "tpt_validex"
+crate-type = ["cdylib"]
+
+[features]
+# Enabled by maturin builds (see pyproject.toml). Kept off by default so
+# `cargo test` links against libpython for in-process testing.
+extension-module = ["pyo3/extension-module"]
+
+[dependencies]
+tpt-valid-core = { workspace = true }
+tpt-valid-schema = { workspace = true }
+tpt-valid-parser = { workspace = true }
+serde_json = { workspace = true }
+pyo3 = { workspace = true }

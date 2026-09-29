@@ -1,0 +1,22 @@
+[package]
+name = "tpt-valid-wasm"
+description = "WebAssembly bindings for tpt-validex (wasm-bindgen): client-side and edge validation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+name = "tpt_valid_wasm"
+crate-type = ["cdylib"]
+
+[dependencies]
+tpt-valid-core = { workspace = true }
+tpt-valid-schema = { workspace = true }
+serde_json = { workspace = true }
+wasm-bindgen = { workspace = true }
+js-sys = "0.3.106"

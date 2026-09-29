@@ -1,0 +1,31 @@
+[package]
+name = "tpt-validex-benches"
+description = "Criterion benchmark suite for tpt-validex"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+tpt-valid-core = { workspace = true }
+tpt-valid-schema = { workspace = true }
+tpt-valid-parser = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "validation"
+harness = false
+
+[[bench]]
+name = "schema_compile"
+harness = false
+
+[[bench]]
+name = "streaming"
+harness = false

@@ -1,0 +1,15 @@
+[package]
+name = "validex-macros"
+description = "Proc macros for tpt-validex: the `schema!` DSL for declaring validation schemas at compile time"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+name = "validex_macros"
+proc-macro = true

@@ -1,0 +1,21 @@
+[package]
+name = "tpt-valid-ffi"
+description = "C ABI boundary for tpt-validex: opaque handles, error codes, stable C API"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+name = "tpt_valid_ffi"
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+tpt-valid-core = { workspace = true }
+tpt-valid-schema = { workspace = true }
+tpt-valid-parser = { workspace = true }
+serde_json = { workspace = true }

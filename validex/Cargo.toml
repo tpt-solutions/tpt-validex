@@ -1,0 +1,25 @@
+[package]
+name = "validex"
+description = "Universal high-performance data validator: one schema, every language. JSON Schema Draft 2020-12 + ergonomic Rust DSL, compiled to state machines"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/validex"
+keywords = ["validation", "json-schema", "validator", "simd", "streaming"]
+categories = ["parser-implementations", "development-tools"]
+
+[dependencies]
+tpt-valid-core = { workspace = true }
+tpt-valid-schema = { workspace = true }
+tpt-valid-parser = { workspace = true }
+validex-macros = { workspace = true }
+serde_json = { workspace = true }
+serde = { workspace = true }
+
+# Self-reference so the crate's own tests/doctests can expand `schema!`
+# (generated code addresses items via the `::validex::` path).
+[dev-dependencies]
+validex = { path = ".", version = "0.1.0" }

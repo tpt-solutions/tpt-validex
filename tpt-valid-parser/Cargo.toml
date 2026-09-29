@@ -1,0 +1,19 @@
+[package]
+name = "tpt-valid-parser"
+description = "JSON parsing front-end for tpt-validex (jiter primary, serde_json baseline) with a strict no-Apache-2.0-only-dependencies policy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+serde_json = { workspace = true }
+
+# jiter (MIT) is the primary parser on native targets; serde_json is the
+# guaranteed-compatible baseline on wasm32 and other non-native targets.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+jiter = { workspace = true }

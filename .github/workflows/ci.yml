@@ -1,0 +1,137 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust-test:
+    name: Rust test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run tests
+        run: cargo test --workspace
+      - name: Check WASM target compiles
+        run: cargo check -p tpt-valid-wasm --target wasm32-unknown-unknown
+
+  lint:
+    name: Clippy & fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  licenses:
+    name: License & advisory audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo-deny licenses (copyleft gate)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses
+      - name: cargo-deny advisories (security audit)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
+      - name: Apache-2.0-only audit (spec §3.2)
+        run: python scripts/audit_apache_only.py
+
+  wasm:
+    name: WASM build & JS tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Install wasm-bindgen-cli (version-matched)
+        run: cargo install wasm-bindgen-cli --version 0.2.129 --locked
+      - name: Build pkg (nodejs target)
+        run: |
+          cargo build -p tpt-valid-wasm --target wasm32-unknown-unknown --release
+          wasm-bindgen --out-dir tpt-valid-wasm/pkg --target nodejs \
+            target/wasm32-unknown-unknown/release/tpt_valid_wasm.wasm
+      - name: JS tests
+        working-directory: tpt-valid-wasm
+        run: node --test tests/validator.test.mjs
+      - name: Binary size budget (< 5 MB)
+        run: |
+          size=$(stat -c%s tpt-valid-wasm/pkg/tpt_valid_wasm_bg.wasm)
+          echo "wasm size: $size bytes"
+          test "$size" -lt 5242880
+
+  python:
+    name: Python bindings & tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install maturin + pytest
+        run: pip install maturin pytest
+      - name: Build extension
+        working-directory: tpt-valid-py
+        run: maturin develop --release
+      - name: pytest
+        working-directory: tpt-valid-py
+        run: pytest tests/ -q
+
+  go:
+    name: Go bindings & tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: Build native library
+        run: cargo build --release -p tpt-valid-ffi
+      - name: Go test
+        working-directory: tpt-valid-go
+        env:
+          CGO_CFLAGS: -I.
+          CGO_LDFLAGS: -L${{ github.workspace }}/target/release
+        run: |
+          export LD_LIBRARY_PATH=${{ github.workspace }}/target/release:$LD_LIBRARY_PATH
+          go test ./...
+
+  benchmarks:
+    name: Benchmark smoke run (regression signal)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run benches (short)
+        run: cargo bench -- --warm-up-time 1 --measurement-time 2
+      - name: Store results
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion-output
+          path: target/criterion
+          retention-days: 30

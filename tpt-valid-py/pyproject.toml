@@ -1,0 +1,42 @@
+[build-system]
+requires = ["maturin>=1.5,<2"]
+build-backend = "maturin"
+
+[project]
+name = "tpt-validex"
+version = "0.1.0"
+description = "Validate millions of records per second. One schema, every language. Zero Apache-2.0-only dependencies."
+readme = "../README.md"
+requires-python = ">=3.8"
+license = { text = "MIT OR Apache-2.0" }
+authors = [{ name = "TPT Solutions" }]
+keywords = ["validation", "json-schema", "validator", "simd", "streaming"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Rust",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/tpt-solutions/tpt-validex"
+Repository = "https://github.com/tpt-solutions/tpt-validex"
+Issues = "https://github.com/tpt-solutions/tpt-validex/issues"
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+module-name = "tpt_validex"
+include = [{ path = "tpt_validex.pyi", format = ["sdist", "wheel"] }]

@@ -1,0 +1,24 @@
+version: 2
+updates:
+  # Rust dependencies: gated by `cargo deny check` in CI (licenses + advisories)
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      rust-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # npm (WASM package metadata + zod test dependency)
+  - package-ecosystem: npm
+    directory: "/tpt-valid-wasm"
+    schedule:
+      interval: weekly
+
+  # GitHub Actions
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly

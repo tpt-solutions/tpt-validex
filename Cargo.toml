@@ -1,0 +1,63 @@
+[workspace]
+resolver = "2"
+members = [
+    "tpt-valid-core",
+    "tpt-valid-schema",
+    "tpt-valid-parser",
+    "tpt-valid-ffi",
+    "tpt-valid-py",
+    "tpt-valid-wasm",
+    "tpt-validex-streamforge",
+    "validex-macros",
+    "validex",
+    "benches",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT OR Apache-2.0"
+authors = ["TPT Solutions"]
+homepage = "https://github.com/tpt-solutions/tpt-validex"
+repository = "https://github.com/tpt-solutions/tpt-validex"
+documentation = "https://docs.rs/validex"
+keywords = ["validation", "json-schema", "validator", "simd", "streaming"]
+categories = ["parser-implementations", "development-tools"]
+
+[workspace.dependencies]
+# Internal crates
+tpt-valid-core = { path = "tpt-valid-core", version = "0.1.0" }
+tpt-valid-schema = { path = "tpt-valid-schema", version = "0.1.0" }
+tpt-valid-parser = { path = "tpt-valid-parser", version = "0.1.0" }
+validex-macros = { path = "validex-macros", version = "0.1.0" }
+
+# Approved external dependencies (MIT-only or MIT/Apache-2.0 dual-licensed).
+# Every addition must pass `cargo deny check licenses` and the
+# Apache-2.0-only audit (scripts/audit_apache_only.py). See spec §3.
+# NOTE: sonic-rs was rejected by that audit — it is Apache-2.0-only, not MIT
+# as assumed in the spec; jiter (MIT) is the primary parser instead.
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+regex = "1.11"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+rayon = "1.10"
+async-trait = "0.1"
+tokio = { version = "1", features = ["full"] }
+jiter = { version = "0.17", default-features = false, features = ["serde"] }
+pyo3 = "0.29"
+# Pinned to the exact wasm-bindgen-cli version installed for JS glue generation.
+wasm-bindgen = "=0.2.129"
+js-sys = "0.3"
+criterion = "0.8"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+
+[profile.bench]
+opt-level = 3
+lto = true
+codegen-units = 1

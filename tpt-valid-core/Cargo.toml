@@ -1,0 +1,19 @@
+[package]
+name = "tpt-valid-core"
+description = "Core validation engine for tpt-validex: validation state machine, format validators, structured errors, batch and streaming (CSV/JSONL) validation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+tpt-valid-parser = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+regex = { workspace = true }
+chrono = { workspace = true }
+rayon = { workspace = true }

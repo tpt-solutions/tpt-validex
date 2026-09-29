@@ -1,0 +1,35 @@
+{
+  "name": "tpt-validex",
+  "version": "0.1.0",
+  "description": "Validate millions of records per second. One schema, every language. Zero Apache-2.0-only dependencies.",
+  "license": "MIT OR Apache-2.0",
+  "author": "TPT Solutions",
+  "homepage": "https://github.com/tpt-solutions/tpt-validex",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tpt-solutions/tpt-validex"
+  },
+  "keywords": [
+    "validation",
+    "json-schema",
+    "validator",
+    "wasm",
+    "simd",
+    "schema"
+  ],
+  "main": "pkg/tpt_valid_wasm.js",
+  "types": "tpt-validex.d.ts",
+  "files": [
+    "pkg/",
+    "tpt-validex.d.ts",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "cargo build -p tpt-valid-wasm --target wasm32-unknown-unknown --release && wasm-bindgen --out-dir pkg --target web target/wasm32-unknown-unknown/release/tpt_valid_wasm.wasm",
+    "build:node": "cargo build -p tpt-valid-wasm --target wasm32-unknown-unknown --release && wasm-bindgen --out-dir pkg --target nodejs target/wasm32-unknown-unknown/release/tpt_valid_wasm.wasm",
+    "test": "npm run build:node && node --test tests/validator.test.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

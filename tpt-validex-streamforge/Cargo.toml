@@ -1,0 +1,21 @@
+[package]
+name = "tpt-validex-streamforge"
+description = "tpt-streamforge pipeline integration for tpt-validex: a `validate` transformation stage with skip/abort/log error handling and errors.jsonl quarantine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+keywords = ["validation", "streaming", "etl", "pipeline", "json-schema"]
+categories = ["parser-implementations", "development-tools"]
+
+[dependencies]
+tpt-valid-core = { workspace = true }
+tpt-valid-schema = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+tpt-stream-core = { git = "https://github.com/tpt-solutions/tpt-streamforge", branch = "master" }
+
+[dev-dependencies]
+tokio = { workspace = true }

@@ -1,0 +1,57 @@
+# cargo-deny configuration for tpt-validex (spec §3.2)
+#
+# Policy:
+#   * The project is dual-licensed MIT / Apache-2.0.
+#   * licenses v2 is deny-by-default: a crate is accepted only when its
+#     license expression is satisfied by the allow list (copyleft licenses
+#     are therefore rejected by construction).
+#   * Apache-2.0-only dependencies require explicit review. Dual-licensed
+#     (MIT OR Apache-2.0) dependencies also evaluate against "Apache-2.0",
+#     so the allow list must contain it; the "no Apache-2.0-only crates"
+#     rule is additionally enforced by scripts/audit_apache_only.py in CI,
+#     which fails the build when a crate's license expression contains
+#     Apache-2.0 without MIT.
+
+[graph]
+# Check with all features/targets so platform-specific deps are audited too.
+all-features = true
+targets = [
+    { triple = "x86_64-unknown-linux-gnu" },
+    { triple = "aarch64-unknown-linux-gnu" },
+    { triple = "x86_64-apple-darwin" },
+    { triple = "aarch64-apple-darwin" },
+    { triple = "x86_64-pc-windows-msvc" },
+    { triple = "wasm32-unknown-unknown" },
+]
+
+[licenses]
+version = 2
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "Unicode-3.0",
+    # pyo3-ffi (required by the spec-approved pyo3 dependency, §3.4).
+    "Apache-2.0 WITH LLVM-exception",
+]
+
+# Example from the spec (§3.2): an Apache-2.0-only crate would be flagged for
+# review. `simd-json` is rejected outright — sonic-rs (MIT) is used instead.
+# [[licenses.clarify]]
+# name = "simd-json"
+# expression = "Apache-2.0"
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+skip-tree = []
+
+[advisories]
+version = 2
+yanked = "deny"
+
+[sources]
+unknown-registry = "warn"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
