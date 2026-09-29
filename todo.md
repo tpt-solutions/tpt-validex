@@ -256,3 +256,63 @@ and the performance targets we do not meet (documented honestly in
 - [x] Publish WASM package to npm (triggered by release tag)
 - [x] Benchmark CI: run benchmarks and compare against stored baseline (smoke run + criterion artifacts; stored-baseline comparison is future work)
 - [x] Dependabot: automated dependency updates gated by `cargo deny check`
+
+---
+
+## Phase 9: Bugs & Hardening (from 2026-09-30 review)
+
+- [ ] **CSV: schema-driven coercion** — coerce cells by the schema's declared property type instead of sampled inference (fixes `01234` zip / `+4155550123` phone in `type: string` columns being turned into integers); inference only as fallback for untyped properties
+- [ ] Add max nesting depth (`max_depth`, default ~128) to the schema reader (`tpt-valid-schema/src/json.rs`) and the validation engine; regression tests with 100k-deep input; verify FFI/WASM cannot stack-overflow
+- [ ] `SchemaCache`: replace clear-on-overflow with LRU; key by hash of schema text
+- [ ] Remove committed build artifacts (`tests/c_example/example.exe`, `tpt-valid-wasm/pkg/*`) and add to `.gitignore`
+- [ ] Document invariants (or replace with `?`/`expect`) for non-test `unwrap()` at `format.rs:125`, `node.rs:217`
+- [ ] CSV `strict` option (reject content after closing quote and invalid UTF-8; currently lenient)
+- [ ] Fix `dependsRequired` → `dependentRequired` naming in `docs/compliance.md`
+
+## Phase 10: JSON Schema Coverage
+
+- [ ] `$ref` / `$defs` / `definitions` — local `#/...` refs with cycle detection for recursive schemas
+- [ ] `$anchor` and `$id`-relative refs; optional user-supplied schema registry for cross-file refs
+- [ ] `prefixItems` and tuple-form `items`
+- [ ] `dependentRequired` / `dependentSchemas`
+- [ ] `minContains` / `maxContains`
+- [ ] `propertyNames`
+- [ ] `unevaluatedProperties` / `unevaluatedItems`
+- [ ] Vendor the official JSON-Schema-Test-Suite (submodule), run in CI with an allow-list of known skips; publish the pass rate in `docs/compliance.md`
+- [ ] Additional formats: `phone`, `currency`, `iban`, `country-code`, `semver`, `regex`, `json-pointer`, `duration`, `time`
+- [ ] Custom format registration API (Rust, Python, JS, Go)
+
+## Phase 11: CLI (`validex`)
+
+- [ ] New `tpt-valid-cli` crate: `validex check <schema> <data.{json,jsonl,csv}>` with summary output and non-zero exit on failure
+- [ ] `--errors <file>`, `--valid <file>`, `--fail-fast`, `--max-errors`, `--format text|json|junit|sarif`
+- [ ] `validex infer <data>` — generate a starter schema from sample data (reuse CSV inference)
+- [ ] `validex diff old.json new.json` — schema compatibility / breaking-change report
+- [ ] `validex watch` mode and `.validex.toml` config mapping globs to schemas
+- [ ] Distribution: prebuilt release binaries, `cargo install`, `pipx`, `npx`, Homebrew, Scoop
+
+## Phase 12: Adoption — Examples, Templates, Playground
+
+- [ ] `examples/` with runnable projects (Makefile/`just run` each): FastAPI request validation, Express middleware, pandas/Polars ETL step, Go HTTP handler, browser form validation (WASM), Streamforge pipeline
+- [ ] `templates/` schema library with good/bad sample data and README each: contact/CRM import, e-commerce orders, invoices, GeoJSON, log lines, IoT events, OpenAPI request bodies
+- [ ] Online playground (static WASM page on GitHub Pages): schema + data panes, live errors, shareable links
+- [ ] Official GitHub Action that validates files in a repo and annotates PRs (SARIF)
+- [ ] `pre-commit` hook definition
+- [ ] Publish schema/meta-schema for editor autocomplete (SchemaStore submission)
+- [ ] README: "60-second start" per language; benchmark table vs `jsonschema`, `fastjsonschema`, `ajv` (extend `benches/compare`)
+- [ ] Migration guide: side-by-side pydantic / zod / ajv snippets; optional `validex convert --from pydantic|zod|ajv`
+- [ ] `CONTRIBUTING.md`, issue templates, `good first issue` labels
+
+## Phase 13: Innovation / Differentiators
+
+- [ ] Friendlier errors: "did you mean" key suggestions, failing schema path, human-readable summaries
+- [ ] Error clustering in streaming mode: top failure patterns with counts and example rows
+- [ ] Opt-in `coerce` mode (trim, `"1,234"`→`1234`, `yes`→`true`, date normalization) with change report and cleaned-output file
+- [ ] Column profiling (null rates, distinct counts) and tighter-schema suggestions
+- [ ] LLM structured-output validation helper: validate tool-call JSON and generate repair prompts from errors
+- [ ] Data-contract workflow: versioned schemas, compatibility gates in CI
+
+## Existing open items (carried over)
+
+- [ ] Set up GitHub repository and publish Go module (see Phase 0 / Phase 6)
+- [ ] Memory usage profiling script for 1M-object RSS (see Benchmarks)

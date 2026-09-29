@@ -210,20 +210,36 @@ targets we hit): [docs/performance.md](docs/performance.md).
 
 ## Repository layout
 
-```
-tpt-valid-core/    validation state machine, formats, streaming, batch
-tpt-valid-schema/  JSON Schema tokenizer → AST → IR → compiler + cache
-tpt-valid-parser/  JSON parsing (jiter / serde_json)
-tpt-valid-ffi/     C ABI + tpt_validex.h
-tpt-valid-py/      Python bindings (PyO3 + maturin) + tests
-tpt-valid-wasm/    WASM bindings (wasm-bindgen) + package.json + JS tests
-tpt-valid-go/      Go bindings (cgo) + tests
-tpt-validex-streamforge/  validate stage for tpt-streamforge pipelines
-validex/           Rust facade crate (Validator + schema! DSL)
-validex-macros/    schema! proc macro
-benches/           criterion benchmarks + language comparison scripts
-docs/              API references, compliance matrix, performance, migration
-tests/c_example/   runnable C example
+Every crate has its own README, CHANGELOG, and crates.io keywords/categories.
+
+| Crate | Purpose |
+| :--- | :--- |
+| [`validex`](validex/) | **Start here.** Rust facade: `Validator` + `schema!` DSL + re-exports |
+| [`tpt-valid-core`](tpt-valid-core/) | Validation state machine, formats, structured errors, batch, CSV/JSONL streaming |
+| [`tpt-valid-schema`](tpt-valid-schema/) | JSON Schema tokenizer → AST → IR → compiler + cache |
+| [`tpt-valid-parser`](tpt-valid-parser/) | JSON parsing (jiter primary, serde_json baseline) |
+| [`tpt-valid-ffi`](tpt-valid-ffi/) | C ABI + `tpt_validex.h` |
+| [`tpt-valid-py`](tpt-valid-py/) | Python bindings (PyO3 + maturin) + tests |
+| [`tpt-valid-wasm`](tpt-valid-wasm/) | WASM bindings (wasm-bindgen) + package.json + JS tests |
+| [`tpt-valid-go`](tpt-valid-go/) | Go bindings (cgo) + tests |
+| [`tpt-validex-streamforge`](tpt-validex-streamforge/) | `validate` stage for tpt-streamforge pipelines |
+| [`validex-macros`](validex-macros/) | `schema!` proc macro |
+| [`benches`](benches/) | Criterion benchmarks + language comparison scripts |
+
+```text
+validex/                Rust facade (Validator + schema! DSL)
+validex-macros/         schema! proc macro
+tpt-valid-core/         validation state machine, formats, streaming, batch
+tpt-valid-schema/       JSON Schema tokenizer → AST → IR → compiler + cache
+tpt-valid-parser/       JSON parsing (jiter / serde_json)
+tpt-valid-ffi/          C ABI + tpt_validex.h
+tpt-valid-py/           Python bindings (PyO3 + maturin) + tests
+tpt-valid-wasm/         WASM bindings (wasm-bindgen) + package.json + JS tests
+tpt-valid-go/           Go bindings (cgo) + tests
+tpt-validex-streamforge/ validate stage for tpt-streamforge pipelines
+benches/                criterion benchmarks + language comparison scripts
+docs/                   API references, compliance matrix, performance, migration
+tests/c_example/        runnable C example
 ```
 
 ## Development

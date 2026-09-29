@@ -1,8 +1,15 @@
 # tpt-validex-go
 
+[![Go Reference](https://img.shields.io/badge/go.dev-reference-007d9c)](https://pkg.go.dev/github.com/tpt-solutions/tpt-validex-go)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](../LICENSE-MIT)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](../LICENSE-APACHE)
+
 Go bindings for [tpt-validex](../README.md) — validate millions of records per
 second with the same JSON Schema used by the Python, JavaScript, Rust, and C
 builds.
+
+**Keywords:** validation · json-schema · validator · cgo · ffi
+**Categories:** API bindings · Data validation · Foreign function interface
 
 ```go
 import "github.com/tpt-solutions/tpt-validex-go"
@@ -38,6 +45,22 @@ valid, errs, err := validator.Validate(map[string]interface{}{
 
 A `Validator` is safe for concurrent use. `ValidationError` carries
 `Path`, `Message`, `Expected`, `Actual` (spec §5.5) and implements `error`.
+
+Errors use the same envelope as every other tpt-validex binding:
+
+```json
+{
+  "errors": [
+    {
+      "path": "$.age",
+      "message": "Expected value <= 150, got 200",
+      "expected": "maximum 150",
+      "actual": "200",
+      "value": 200
+    }
+  ]
+}
+```
 
 ## Building
 
@@ -79,3 +102,16 @@ The module path is `github.com/tpt-solutions/tpt-validex-go`; tag releases as
 code lives in `tpt-valid-go/` — use a `vX.Y.Z` tag combined with the
 `//go:build` free layout above, or move this directory to a dedicated
 repository when publishing publicly).
+
+## Documentation
+
+- [Go API reference](../docs/api-go.md)
+- [Compliance matrix](../docs/compliance.md)
+- [C API reference](../docs/api-c.md) — the ABI these bindings wrap
+- [Changelog](CHANGELOG.md)
+
+## License
+
+Dual-licensed under [MIT](../LICENSE-MIT) or
+[Apache-2.0](../LICENSE-APACHE), at your option.
+

@@ -7,8 +7,9 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-keywords = ["validation", "streaming", "etl", "pipeline", "json-schema"]
-categories = ["parser-implementations", "development-tools"]
+readme = "README.md"
+keywords = ["streaming", "etl", "pipeline", "json-schema", "validation"]
+categories = ["development-tools", "api-bindings"]
 
 [dependencies]
 tpt-valid-core = { workspace = true }

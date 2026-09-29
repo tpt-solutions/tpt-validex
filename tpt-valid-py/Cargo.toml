@@ -7,8 +7,9 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-keywords.workspace = true
-categories.workspace = true
+readme = "README.md"
+keywords = ["python", "pyo3", "json-schema", "validation", "bindings"]
+categories = ["api-bindings", "development-tools"]
 
 [lib]
 name = "tpt_validex"

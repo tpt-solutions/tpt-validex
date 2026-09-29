@@ -7,8 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-keywords.workspace = true
-categories.workspace = true
+readme = "README.md"
+documentation = "https://docs.rs/tpt-valid-parser"
+keywords = ["json", "parser", "jiter", "serde", "simd"]
+categories = ["parser-implementations", "encoding"]
 
 [dependencies]
 serde_json = { workspace = true }

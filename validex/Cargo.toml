@@ -7,8 +7,9 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+readme = "README.md"
 documentation = "https://docs.rs/validex"
-keywords = ["validation", "json-schema", "validator", "simd", "streaming"]
+keywords = ["validation", "json-schema", "validator", "streaming", "dsl"]
 categories = ["parser-implementations", "development-tools"]
 
 [dependencies]
