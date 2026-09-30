@@ -124,28 +124,97 @@ fn build_object_ir(obj: &ObjectAst, warnings: &mut Vec<Warning>) -> Result<IrSch
     if let Some(f) = &obj.format {
         match Format::from_keyword(f) {
             Some(fmt) => ops.push(IrOp::Format(fmt)),
-            None => warnings.push(format!(
-                "unknown format \"{f}\" is not validated (Draft 2020-12 §7.2.3 allows \
-                 ignoring unknown formats)"
-            )),
+            None => {
+                // Not built-in: emitted as a runtime custom-format check so
+                // applications can register an assertion for it; without a
+                // registration it is a no-op (Draft 2020-12 §7.2.3).
+                warnings.push(format!(
+                    "format \"{f}\" is not built-in; it is validated only if a custom \
+                     format function is registered at validation time"
+                ));
+                ops.push(IrOp::CustomFormat(f.clone()));
+            }
         }
     }
-    if obj.items.is_some() || obj.min_items.is_some() || obj.max_items.is_some() {
-        let items_schema = match &obj.items {
-            Some(s) => build_ir(s, warnings)?,
-            None => IrSchema::always(),
+    if obj.items.is_some()
+        || obj.tuple_items.is_some()
+        || !obj.prefix_items.is_empty()
+        || obj.min_items.is_some()
+        || obj.max_items.is_some()
+        || obj.unevaluated_items.is_some()
+    {
+        let min_items = obj.min_items.unwrap_or(0);
+        let max_items = obj.max_items.unwrap_or(usize::MAX);
+
+        // Positional schemas: `prefixItems` first, then Draft ≤07 tuple-form
+        // `items` entries (concatenated — documented in the compliance
+        // matrix).
+        let mut prefixes = Vec::new();
+        for s in obj
+            .prefix_items
+            .iter()
+            .chain(obj.tuple_items.iter().flatten())
+        {
+            prefixes.push(build_ir(s, warnings)?);
+        }
+        // Schema-form `items` applies to items beyond the prefix. Tuple-form
+        // `items` IS the prefix, so it does not also constrain the rest.
+        let rest = if obj.tuple_items.is_none() {
+            match &obj.items {
+                Some(s) => Some(Box::new(build_ir(s, warnings)?)),
+                None => None,
+            }
+        } else {
+            None
         };
-        ops.push(IrOp::Items {
-            schema: Box::new(items_schema),
-            min_items: obj.min_items.unwrap_or(0),
-            max_items: obj.max_items.unwrap_or(usize::MAX),
-        });
+        // `unevaluatedItems` constrains items beyond the prefix when no
+        // `items` schema evaluates them; with schema-form `items` every item
+        // is evaluated, so it is vacuous and dropped.
+        let unevaluated = if rest.is_none() && obj.tuple_items.is_none() {
+            match &obj.unevaluated_items {
+                Some(s) => Some(Box::new(build_ir(s, warnings)?)),
+                None => None,
+            }
+        } else {
+            None
+        };
+
+        if prefixes.is_empty() && unevaluated.is_none() {
+            // Plain schema-form `items` (or bounds only): one node carrying
+            // schema + bounds, bounds reported first.
+            let items_schema = match rest {
+                Some(s) => *s,
+                None => IrSchema::always(),
+            };
+            ops.push(IrOp::Items {
+                schema: Box::new(items_schema),
+                min_items,
+                max_items,
+            });
+        } else {
+            ops.push(IrOp::PrefixItems {
+                prefixes,
+                items: rest,
+                unevaluated,
+            });
+            if obj.min_items.is_some() || obj.max_items.is_some() {
+                ops.push(IrOp::Items {
+                    schema: Box::new(IrSchema::always()),
+                    min_items,
+                    max_items,
+                });
+            }
+        }
     }
     if obj.unique_items == Some(true) {
         ops.push(IrOp::UniqueItems);
     }
     if let Some(c) = &obj.contains {
-        ops.push(IrOp::Contains(Box::new(build_ir(c, warnings)?)));
+        ops.push(IrOp::Contains {
+            schema: Box::new(build_ir(c, warnings)?),
+            min: obj.min_contains.unwrap_or(1),
+            max: obj.max_contains,
+        });
     }
 
     // Object keywords: one combined op per schema node so that
@@ -155,6 +224,7 @@ fn build_object_ir(obj: &ObjectAst, warnings: &mut Vec<Warning>) -> Result<IrSch
         || !obj.pattern_properties.is_empty()
         || !obj.required.is_empty()
         || obj.additional_properties.is_some()
+        || obj.unevaluated_properties.is_some()
     {
         let mut properties = Vec::with_capacity(obj.properties.len());
         for (name, sub) in &obj.properties {
@@ -174,12 +244,35 @@ fn build_object_ir(obj: &ObjectAst, warnings: &mut Vec<Warning>) -> Result<IrSch
                 IrAdditional::Schema(Box::new(build_ir(s, warnings)?))
             }
         };
+        let unevaluated = match &obj.unevaluated_properties {
+            None | Some(AdditionalAst::Schema(SchemaAst::Always)) => IrAdditional::Allow,
+            Some(AdditionalAst::Forbid) => IrAdditional::Forbid,
+            Some(AdditionalAst::Schema(s)) => {
+                IrAdditional::Schema(Box::new(build_ir(s, warnings)?))
+            }
+        };
         ops.push(IrOp::Object {
             properties,
             pattern_properties,
             additional,
+            unevaluated,
             required: obj.required.clone(),
         });
+    }
+
+    if !obj.dependent_required.is_empty() {
+        ops.push(IrOp::DependentRequired(obj.dependent_required.clone()));
+    }
+    if !obj.dependent_schemas.is_empty() {
+        let children = obj
+            .dependent_schemas
+            .iter()
+            .map(|(k, s)| build_ir(s, warnings).map(|ir| (k.clone(), ir)))
+            .collect::<Result<Vec<_>, _>>()?;
+        ops.push(IrOp::DependentSchemas(children));
+    }
+    if let Some(pn) = &obj.property_names {
+        ops.push(IrOp::PropertyNames(Box::new(build_ir(pn, warnings)?)));
     }
 
     if let Some(n) = &obj.not {
@@ -263,9 +356,17 @@ fn absorb_conjunct(ops: &mut Vec<IrOp>, member: IrSchema) {
                 properties,
                 pattern_properties,
                 additional,
+                unevaluated,
                 required,
             } => {
-                merge_object_op(ops, properties, pattern_properties, additional, required);
+                merge_object_op(
+                    ops,
+                    properties,
+                    pattern_properties,
+                    additional,
+                    unevaluated,
+                    required,
+                );
             }
             other => ops.push(other),
         }
@@ -274,11 +375,13 @@ fn absorb_conjunct(ops: &mut Vec<IrOp>, member: IrSchema) {
 
 /// Merge another object keyword set into the parent's (creating one if
 /// absent), so that `additionalProperties` accounting sees the union.
+#[allow(clippy::too_many_arguments)]
 fn merge_object_op(
     ops: &mut Vec<IrOp>,
     properties: Vec<(String, IrSchema)>,
     pattern_properties: Vec<(Regex, IrSchema)>,
     additional: IrAdditional,
+    unevaluated: IrAdditional,
     required: Vec<String>,
 ) {
     let existing = ops.iter_mut().find(|o| matches!(o, IrOp::Object { .. }));
@@ -286,6 +389,7 @@ fn merge_object_op(
         properties: p,
         pattern_properties: pp,
         additional: a,
+        unevaluated: u,
         required: r,
     }) = existing
     {
@@ -302,11 +406,13 @@ fn merge_object_op(
         pp.extend(pattern_properties);
         r.extend(required);
         *a = merge_additional(a.clone(), additional);
+        *u = merge_additional(u.clone(), unevaluated);
     } else {
         ops.push(IrOp::Object {
             properties,
             pattern_properties,
             additional,
+            unevaluated,
             required,
         });
     }
@@ -352,8 +458,12 @@ fn rank(n: &ValidationNode) -> u8 {
         | ValidationNode::CheckObjectEx(_)
         | ValidationNode::CheckRequired(_)
         | ValidationNode::CheckArray(_, _, _)
+        | ValidationNode::CheckPrefixItems(_, _, _)
         | ValidationNode::CheckUniqueItems(_)
-        | ValidationNode::CheckContains(_)
+        | ValidationNode::CheckContains(_, _, _)
+        | ValidationNode::CheckDependentRequired(_)
+        | ValidationNode::CheckDependentSchemas(_)
+        | ValidationNode::CheckPropertyNames(_)
         | ValidationNode::CheckField(_, _) => 2,
         ValidationNode::CheckIfThenElse(_, _, _)
         | ValidationNode::CheckAllOf(_)
@@ -399,17 +509,30 @@ fn lower_op(op: &IrOp) -> ValidationNode {
         IrOp::Enum(set) => ValidationNode::CheckEnum(set.clone()),
         IrOp::Const(v) => ValidationNode::CheckConst(v.clone()),
         IrOp::Format(f) => ValidationNode::CheckFormat(*f),
+        IrOp::CustomFormat(name) => ValidationNode::CheckCustomFormat(name.clone()),
         IrOp::Items {
             schema,
             min_items,
             max_items,
         } => ValidationNode::CheckArray(Box::new(lower(schema)), *min_items, *max_items),
+        IrOp::PrefixItems {
+            prefixes,
+            items,
+            unevaluated,
+        } => ValidationNode::CheckPrefixItems(
+            prefixes.iter().map(lower).collect(),
+            items.as_deref().map(|s| Box::new(lower(s))),
+            unevaluated.as_deref().map(|s| Box::new(lower(s))),
+        ),
         IrOp::UniqueItems => ValidationNode::CheckUniqueItems(true),
-        IrOp::Contains(s) => ValidationNode::CheckContains(Box::new(lower(s))),
+        IrOp::Contains { schema, min, max } => {
+            ValidationNode::CheckContains(Box::new(lower(schema)), *min, *max)
+        }
         IrOp::Object {
             properties,
             pattern_properties,
             additional,
+            unevaluated,
             required,
         } => ValidationNode::CheckObjectEx(ObjectShape {
             properties: properties
@@ -425,8 +548,22 @@ fn lower_op(op: &IrOp) -> ValidationNode {
                 IrAdditional::Forbid => AdditionalProperties::Forbid,
                 IrAdditional::Schema(s) => AdditionalProperties::Schema(Box::new(lower(s))),
             },
+            unevaluated: match unevaluated {
+                IrAdditional::Allow => None,
+                IrAdditional::Forbid => Some(AdditionalProperties::Forbid),
+                IrAdditional::Schema(s) => {
+                    Some(AdditionalProperties::Schema(Box::new(lower(s))))
+                }
+            },
             required: required.clone(),
         }),
+        IrOp::DependentRequired(deps) => ValidationNode::CheckDependentRequired(deps.clone()),
+        IrOp::DependentSchemas(deps) => ValidationNode::CheckDependentSchemas(
+            deps.iter()
+                .map(|(k, s)| (k.clone(), Box::new(lower(s))))
+                .collect(),
+        ),
+        IrOp::PropertyNames(s) => ValidationNode::CheckPropertyNames(Box::new(lower(s))),
         IrOp::IfThenElse { if_, then_, else_ } => ValidationNode::CheckIfThenElse(
             Box::new(lower(if_)),
             then_.as_deref().map(|t| Box::new(lower(t))),
@@ -601,5 +738,145 @@ mod tests {
         assert!(ok(&schema.clone(), json!(3)));
         assert!(!ok(&schema.clone(), json!(6)));
         assert!(!ok(&schema, json!(2.5)));
+    }
+
+    #[test]
+    fn prefix_items_and_tuple_items() {
+        let schema = json!({
+            "type": "array",
+            "prefixItems": [{"type": "string"}, {"type": "integer"}],
+            "items": {"type": "boolean"}
+        });
+        assert!(ok(&schema, json!(["a", 1, true])));
+        assert!(!ok(&schema, json!(["a", 1, 2])));
+
+        let tuple = json!({
+            "type": "array",
+            "items": [{"type": "string"}, {"type": "integer"}]
+        });
+        assert!(ok(&tuple, json!(["a", 1])));
+        assert!(ok(&tuple, json!(["a", 1, "anything"])));
+        assert!(!ok(&tuple, json!([1, 2])));
+    }
+
+    #[test]
+    fn contains_min_max() {
+        let schema = json!({
+            "type": "array",
+            "contains": {"type": "integer"},
+            "minContains": 2,
+            "maxContains": 3
+        });
+        assert!(ok(&schema, json!([1, 2])));
+        assert!(ok(&schema, json!(["x", 1, 2, 3])));
+        assert!(!ok(&schema, json!([1])));
+        assert!(!ok(&schema, json!([1, 2, 3, 4])));
+    }
+
+    #[test]
+    fn dependent_required_and_schemas() {
+        let dr = json!({
+            "type": "object",
+            "properties": {
+                "credit_card": {"type": "string"},
+                "billing_address": {"type": "string"}
+            },
+            "dependentRequired": {"credit_card": ["billing_address"]}
+        });
+        assert!(ok(&dr, json!({"credit_card": "1", "billing_address": "x"})));
+        assert!(ok(&dr, json!({"name": "x"})));
+        assert!(!ok(&dr, json!({"credit_card": "1"})));
+
+        let ds = json!({
+            "type": "object",
+            "properties": {"a": {"type": "integer"}},
+            "dependentSchemas": {
+                "a": {"required": ["b"], "properties": {"b": {"type": "string"}}}
+            }
+        });
+        assert!(ok(&ds, json!({"a": 1, "b": "x"})));
+        assert!(ok(&ds, json!({"c": 1})));
+        assert!(!ok(&ds, json!({"a": 1})));
+        assert!(!ok(&ds, json!({"a": 1, "b": 2})));
+    }
+
+    #[test]
+    fn property_names() {
+        let schema = json!({
+            "type": "object",
+            "propertyNames": {"pattern": "^[a-z]+$"}
+        });
+        assert!(ok(&schema, json!({"abc": 1})));
+        assert!(!ok(&schema, json!({"ABC": 1})));
+    }
+
+    #[test]
+    fn unevaluated_properties_and_items() {
+        let schema = json!({
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "patternProperties": {"^S_": {"type": "string"}},
+            "unevaluatedProperties": false
+        });
+        assert!(ok(&schema, json!({"name": "x", "S_a": "y"})));
+        assert!(!ok(&schema, json!({"name": "x", "other": 1})));
+
+        let items_schema = json!({
+            "type": "array",
+            "prefixItems": [{"type": "integer"}],
+            "unevaluatedItems": {"type": "string"}
+        });
+        assert!(ok(&items_schema, json!([1, "a"])));
+        assert!(!ok(&items_schema, json!([1, 2])));
+    }
+
+    #[test]
+    fn refs_end_to_end() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "billing": {"$ref": "#/$defs/address"},
+                "shipping": {"$ref": "#/$defs/address"}
+            },
+            "required": ["billing"],
+            "$defs": {
+                "address": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"]
+                }
+            }
+        });
+        assert!(ok(&schema, json!({"billing": {"city": "Berlin"}})));
+        assert!(!ok(&schema, json!({"billing": {}})));
+        assert!(!ok(&schema, json!({"billing": {"city": 1}})));
+
+        // Anchors:
+        let anchored = json!({
+            "type": "object",
+            "properties": {"a": {"$ref": "#nonneg"}},
+            "$defs": {"x": {"$anchor": "nonneg", "type": "integer", "minimum": 0}}
+        });
+        assert!(ok(&anchored, json!({"a": 3})));
+        assert!(!ok(&anchored, json!({"a": -1})));
+    }
+
+    #[test]
+    fn custom_formats_pass_through_to_runtime() {
+        let ast = parse_schema(&json!({"type": "string", "format": "internal-id"})).unwrap();
+        let (node, warnings) = compile(&ast).unwrap();
+        assert_eq!(warnings.len(), 1, "unknown format warns");
+        assert!(warnings[0].contains("internal-id"));
+        // Unregistered: no-op (annotation semantics).
+        assert!(validate(&node, &json!("anything"), &ValidationOptions::default()).is_empty());
+        // Registered: enforced.
+        let opts = ValidationOptions::default()
+            .with_format("internal-id", |s| s.starts_with("ID-"));
+        assert!(validate(&node, &json!("ID-1234"), &opts).is_empty());
+        assert_eq!(validate(&node, &json!("nope"), &opts).len(), 1);
+        // Non-strings are exempt (format applies to strings only).
+        let ast = parse_schema(&json!({"format": "internal-id"})).unwrap();
+        let (node, _) = compile(&ast).unwrap();
+        assert!(validate(&node, &json!(42), &opts).is_empty());
     }
 }

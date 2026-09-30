@@ -96,8 +96,8 @@ fn normalize_numbers_ref(value: &Value) -> Value {
     normalize_numbers(value.clone())
 }
 
-/// How `additionalProperties` treats keys not covered by `properties` /
-/// `patternProperties`.
+/// How `additionalProperties` / `unevaluatedProperties` treat keys not
+/// covered by `properties` / `patternProperties`.
 #[derive(Debug, Clone, Default)]
 pub enum AdditionalProperties {
     /// `true` (or absent): unconstrained.
@@ -110,16 +110,26 @@ pub enum AdditionalProperties {
 }
 
 /// Full object validation shape emitted by the schema compiler:
-/// `properties` + `patternProperties` + `additionalProperties` + `required`
-/// combined so unknown-key accounting is exact.
+/// `properties` + `patternProperties` + `additionalProperties` +
+/// `unevaluatedProperties` + `required` combined so unknown-key accounting
+/// is exact.
 #[derive(Debug, Clone, Default)]
 pub struct ObjectShape {
     /// Property-name → schema.
     pub properties: Vec<(String, ValidationNode)>,
     /// Pattern → schema, applied to every matching key.
     pub pattern_properties: Vec<(CompiledPattern, ValidationNode)>,
-    /// Rule for keys not covered above.
+    /// Rule for keys not covered above (`additionalProperties`).
     pub additional: AdditionalProperties,
+    /// Rule for keys not covered above (`unevaluatedProperties`). Same
+    /// accounting as [`ObjectShape::additional`]; kept separate so a schema
+    /// using both keywords applies both rules.
+    ///
+    /// Static-accounting caveat (documented in the compliance matrix): like
+    /// `additionalProperties`, this only sees properties evaluated by this
+    /// schema object (incl. `allOf` siblings after merging) — annotations
+    /// from sibling `anyOf`/`oneOf`/`if` branches are not tracked.
+    pub unevaluated: Option<AdditionalProperties>,
     /// Keys that must be present.
     pub required: Vec<String>,
 }
@@ -152,6 +162,10 @@ pub enum ValidationNode {
     CheckMinLength(usize),
     /// `maxLength` (in characters)
     CheckMaxLength(usize),
+    /// `minProperties` (object key count)
+    CheckMinProperties(usize),
+    /// `maxProperties` (object key count)
+    CheckMaxProperties(usize),
     /// `pattern` — pre-compiled regex.
     CheckPattern(CompiledPattern),
     /// `enum` — hash-set membership.
@@ -160,18 +174,40 @@ pub enum ValidationNode {
     CheckConst(Value),
     /// `format` — built-in format validators.
     CheckFormat(Format),
+    /// A `format` keyword that is not a built-in: validated by a
+    /// format function registered in [`ValidationOptions`] at validation
+    /// time. Unregistered names are ignored (Draft 2020-12 §7.2.3).
+    CheckCustomFormat(String),
     /// Array constraints: `items` schema plus `minItems` / `maxItems`
     /// (`usize::MAX` = unbounded).
     CheckArray(Box<ValidationNode>, usize, usize),
+    /// `prefixItems` positional schemas, plus optional `items` schema for
+    /// the items beyond the prefix, plus optional `unevaluatedItems` schema
+    /// for items beyond the prefix when no `items` schema applies. Bounds
+    /// (`minItems` / `maxItems`) are separate [`ValidationNode::CheckArray`]
+    /// nodes.
+    CheckPrefixItems(
+        Vec<ValidationNode>,
+        Option<Box<ValidationNode>>,
+        Option<Box<ValidationNode>>,
+    ),
     /// `uniqueItems`
     CheckUniqueItems(bool),
-    /// `contains` — at least one array item must match.
-    CheckContains(Box<ValidationNode>),
+    /// `contains` with `minContains` (default 1) / `maxContains`.
+    CheckContains(Box<ValidationNode>, usize, Option<usize>),
     /// `properties` (name → schema).
     CheckObject(Vec<(String, ValidationNode)>),
     /// Compiled object shape: `properties` + `patternProperties` +
     /// `additionalProperties` + `required` in one node.
     CheckObjectEx(ObjectShape),
+    /// `dependentRequired` — if the key is present, all of its dependent
+    /// keys must be present too.
+    CheckDependentRequired(Vec<(String, Vec<String>)>),
+    /// `dependentSchemas` — if the key is present, the object must also
+    /// satisfy the sub-schema.
+    CheckDependentSchemas(Vec<(String, Box<ValidationNode>)>),
+    /// `propertyNames` — every object key must match the sub-node.
+    CheckPropertyNames(Box<ValidationNode>),
     /// `if` / `then` / `else` — conditional validation.
     CheckIfThenElse(
         Box<ValidationNode>,
@@ -214,7 +250,11 @@ impl ValidationNode {
         }
         match flat.len() {
             0 => ValidationNode::Always,
-            1 => flat.into_iter().next().unwrap(),
+            // `expect`: the length was just matched to be exactly 1.
+            1 => flat
+                .into_iter()
+                .next()
+                .expect("flat.len() == 1 checked above"),
             _ => ValidationNode::CheckAll(flat),
         }
     }

@@ -1,6 +1,14 @@
 # Rust
 /target/
 Cargo.lock
+*.exe
+
+# wasm-pack build output (regenerate with: wasm-pack build)
+/tpt-valid-wasm/pkg/
+
+# C example build output
+/tests/c_example/example
+/tests/c_example/example.o
 
 # Python
 __pycache__/

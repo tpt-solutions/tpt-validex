@@ -18,6 +18,10 @@ pub enum Format {
     Date,
     /// `date-time` — RFC 3339 date-time.
     DateTime,
+    /// `time` — RFC 3339 full-time (`HH:MM:SS(.frac)?(Z|±HH:MM)`).
+    Time,
+    /// `duration` — ISO 8601 duration (`PnYnMnDTnHnMnS`, `PnW`).
+    Duration,
     /// `uuid` — RFC 4122 textual UUID (8-4-4-4-12 hex, any case).
     Uuid,
     /// `ipv4` — dotted-quad IPv4 (leading zeros rejected).
@@ -26,22 +30,57 @@ pub enum Format {
     Ipv6,
     /// `hostname` — RFC 1123 internet host name.
     Hostname,
+    /// `phone` — E.164-style international telephone number.
+    Phone,
+    /// `currency` — ISO 4217 alphabetic currency code (3 uppercase letters).
+    Currency,
+    /// `iban` — ISO 13616 IBAN with mod-97 checksum validation.
+    Iban,
+    /// `country-code` — ISO 3166-1 alpha-2 country code.
+    CountryCode,
+    /// `semver` — Semantic Versioning 2.0.0.
+    Semver,
+    /// `regex` — a valid regular expression (ECMA-262 flavor intended;
+    /// validated with the `regex` crate syntax).
+    Regex,
+    /// `json-pointer` — RFC 6901 JSON Pointer.
+    JsonPointer,
+}
+
+/// The `format` keyword → [`Format`] mapping, including documented aliases.
+pub fn format_keyword_map() -> &'static [(&'static str, Format)] {
+    &[
+        ("email", Format::Email),
+        ("uri", Format::Uri),
+        ("url", Format::Uri),
+        ("iri", Format::Uri),
+        ("date", Format::Date),
+        ("date-time", Format::DateTime),
+        ("datetime", Format::DateTime),
+        ("time", Format::Time),
+        ("duration", Format::Duration),
+        ("uuid", Format::Uuid),
+        ("ipv4", Format::Ipv4),
+        ("ipv6", Format::Ipv6),
+        ("hostname", Format::Hostname),
+        ("idn-hostname", Format::Hostname),
+        ("phone", Format::Phone),
+        ("currency", Format::Currency),
+        ("iban", Format::Iban),
+        ("country-code", Format::CountryCode),
+        ("semver", Format::Semver),
+        ("regex", Format::Regex),
+        ("json-pointer", Format::JsonPointer),
+    ]
 }
 
 impl Format {
     /// Map a JSON Schema `format` keyword to a [`Format`], if supported.
     pub fn from_keyword(keyword: &str) -> Option<Format> {
-        match keyword {
-            "email" => Some(Format::Email),
-            "uri" | "url" | "iri" => Some(Format::Uri),
-            "date" => Some(Format::Date),
-            "date-time" | "datetime" => Some(Format::DateTime),
-            "uuid" => Some(Format::Uuid),
-            "ipv4" => Some(Format::Ipv4),
-            "ipv6" => Some(Format::Ipv6),
-            "hostname" | "idn-hostname" => Some(Format::Hostname),
-            _ => None,
-        }
+        format_keyword_map()
+            .iter()
+            .find(|(k, _)| *k == keyword)
+            .map(|(_, f)| *f)
     }
 
     /// The canonical keyword for this format.
@@ -51,10 +90,19 @@ impl Format {
             Format::Uri => "uri",
             Format::Date => "date",
             Format::DateTime => "date-time",
+            Format::Time => "time",
+            Format::Duration => "duration",
             Format::Uuid => "uuid",
             Format::Ipv4 => "ipv4",
             Format::Ipv6 => "ipv6",
             Format::Hostname => "hostname",
+            Format::Phone => "phone",
+            Format::Currency => "currency",
+            Format::Iban => "iban",
+            Format::CountryCode => "country-code",
+            Format::Semver => "semver",
+            Format::Regex => "regex",
+            Format::JsonPointer => "json-pointer",
         }
     }
 
@@ -65,10 +113,19 @@ impl Format {
             Format::Uri => is_valid_uri(s),
             Format::Date => is_valid_date(s),
             Format::DateTime => is_valid_datetime(s),
+            Format::Time => is_valid_time(s),
+            Format::Duration => is_valid_duration(s),
             Format::Uuid => is_valid_uuid(s),
             Format::Ipv4 => is_valid_ipv4(s),
             Format::Ipv6 => is_valid_ipv6(s),
             Format::Hostname => is_valid_hostname(s),
+            Format::Phone => is_valid_phone(s),
+            Format::Currency => is_valid_currency(s),
+            Format::Iban => is_valid_iban(s),
+            Format::CountryCode => is_valid_country_code(s),
+            Format::Semver => is_valid_semver(s),
+            Format::Regex => regex::Regex::new(s).is_ok(),
+            Format::JsonPointer => is_valid_json_pointer(s),
         }
     }
 
@@ -122,7 +179,9 @@ pub fn is_valid_uri(s: &str) -> bool {
         return false;
     }
     let mut chars = s.chars();
-    let first = chars.next().unwrap();
+    let first = chars
+        .next()
+        .expect("s is non-empty (checked at function entry)");
     if !first.is_ascii_alphabetic() {
         return false;
     }
@@ -316,8 +375,342 @@ pub fn is_valid_hostname(s: &str) -> bool {
     !(last.bytes().all(|b| b.is_ascii_digit()))
 }
 
+/// E.164-style international telephone number: `+` country code and up to 15
+/// digits. Spaces, dashes, dots and parentheses are tolerated as formatting
+/// (stripped before the digit check); the bare `+` prefix is required.
+pub fn is_valid_phone(s: &str) -> bool {
+    let cleaned: String = s
+        .chars()
+        .filter(|c| !matches!(c, ' ' | '-' | '.' | '(' | ')'))
+        .collect();
+    let Some(rest) = cleaned.strip_prefix('+') else {
+        return false;
+    };
+    let digits = rest.chars().count();
+    (8..=15).contains(&digits) && rest.chars().all(|c| c.is_ascii_digit())
+}
+
+/// ISO 4217 alphabetic currency code: three uppercase ASCII letters from the
+/// official list.
+pub fn is_valid_currency(s: &str) -> bool {
+    const CURRENCIES: &[&str] = &[
+        "AED", "AFN", "ALL", "AMD", "ANG", "AOA", "ARS", "AUD", "AWG", "AZN", "BAM", "BBD", "BDT",
+        "BGN", "BHD", "BIF", "BMD", "BND", "BOB", "BRL", "BSD", "BTN", "BWP", "BYN", "BZD", "CAD",
+        "CDF", "CHF", "CLP", "CNY", "COP", "CRC", "CUP", "CVE", "CZK", "DJF", "DKK", "DOP", "DZD",
+        "EGP", "ERN", "ETB", "EUR", "FJD", "FKP", "GBP", "GEL", "GHS", "GIP", "GMD", "GNF", "GTQ",
+        "GYD", "HKD", "HNL", "HTG", "HUF", "IDR", "ILS", "INR", "IQD", "IRR", "ISK", "JMD", "JOD",
+        "JPY", "KES", "KGS", "KHR", "KMF", "KPW", "KRW", "KWD", "KYD", "KZT", "LAK", "LBP", "LKR",
+        "LRD", "LSL", "LYD", "MAD", "MDL", "MGA", "MKD", "MMK", "MNT", "MOP", "MRU", "MUR", "MVR",
+        "MWK", "MXN", "MYR", "MZN", "NAD", "NGN", "NIO", "NOK", "NPR", "NZD", "OMR", "PAB", "PEN",
+        "PGK", "PHP", "PKR", "PLN", "PYG", "QAR", "RON", "RSD", "RUB", "RWF", "SAR", "SBD", "SCR",
+        "SDG", "SEK", "SGD", "SHP", "SLE", "SOS", "SRD", "SSP", "STN", "SVC", "SYP", "SZL", "THB",
+        "TJS", "TMT", "TND", "TOP", "TRY", "TTD", "TWD", "TZS", "UAH", "UGX", "USD", "UYU", "UZS",
+        "VED", "VES", "VND", "VUV", "WST", "XAF", "XCD", "XOF", "XPF", "YER", "ZAR", "ZMW", "ZWG",
+        // Funds and special codes.
+        "XAU", "XAG", "XPT", "XPD", "XDR", "XSU", "XUA", "BOV", "CHE", "CHW", "CLF", "COU", "CUC",
+        "MXV", "USN", "UYW",
+    ];
+    CURRENCIES.contains(&s)
+}
+
+/// ISO 13616 IBAN: country code + two check digits + BBAN (15–34 characters
+/// total), validated with the standard mod-97 check.
+pub fn is_valid_iban(s: &str) -> bool {
+    let compact: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+    if compact.len() < 15 || compact.len() > 34 {
+        return false;
+    }
+    let bytes = compact.as_bytes();
+    if !bytes[0..2].iter().all(u8::is_ascii_uppercase) {
+        return false;
+    }
+    if !bytes[2..4].iter().all(u8::is_ascii_digit) {
+        return false;
+    }
+    if !bytes[4..].iter().all(|b| b.is_ascii_alphanumeric()) {
+        return false;
+    }
+    // Move the first four characters to the end, map letters to numbers
+    // (A=10 … Z=35) and run the ISO 7064 mod-97-10 check.
+    let rearranged: String = compact[4..].to_string() + &compact[..4];
+    let mut remainder: u32 = 0;
+    for c in rearranged.chars() {
+        if c.is_ascii_digit() {
+            remainder = (remainder * 10 + u32::from(c as u8 - b'0')) % 97;
+        } else {
+            // Letters expand to two digits (10–35).
+            let n = u32::from(c.to_ascii_uppercase() as u8 - b'A') + 10;
+            remainder = (remainder * 100 + n) % 97;
+        }
+    }
+    remainder == 1
+}
+
+/// ISO 3166-1 alpha-2 country code (officially assigned).
+pub fn is_valid_country_code(s: &str) -> bool {
+    const COUNTRIES: &[&str] = &[
+        "AD", "AE", "AF", "AG", "AI", "AL", "AM", "AO", "AQ", "AR", "AS", "AT", "AU", "AW", "AX",
+        "AZ", "BA", "BB", "BD", "BE", "BF", "BG", "BH", "BI", "BJ", "BL", "BM", "BN", "BO", "BQ",
+        "BR", "BS", "BT", "BV", "BW", "BY", "BZ", "CA", "CC", "CD", "CF", "CG", "CH", "CI", "CK",
+        "CL", "CM", "CN", "CO", "CR", "CU", "CV", "CW", "CX", "CY", "CZ", "DE", "DJ", "DK", "DM",
+        "DO", "DZ", "EC", "EE", "EG", "EH", "ER", "ES", "ET", "FI", "FJ", "FK", "FM", "FO", "FR",
+        "GA", "GB", "GD", "GE", "GF", "GG", "GH", "GI", "GL", "GM", "GN", "GP", "GQ", "GR", "GS",
+        "GT", "GU", "GW", "GY", "HK", "HM", "HN", "HR", "HT", "HU", "ID", "IE", "IL", "IM", "IN",
+        "IO", "IQ", "IR", "IS", "IT", "JE", "JM", "JO", "JP", "KE", "KG", "KH", "KI", "KM", "KN",
+        "KP", "KR", "KW", "KY", "KZ", "LA", "LB", "LC", "LI", "LK", "LR", "LS", "LT", "LU", "LV",
+        "LY", "MA", "MC", "MD", "ME", "MF", "MG", "MH", "MK", "ML", "MM", "MN", "MO", "MP", "MQ",
+        "MR", "MS", "MT", "MU", "MV", "MW", "MX", "MY", "MZ", "NA", "NC", "NE", "NF", "NG", "NI",
+        "NL", "NO", "NP", "NR", "NU", "NZ", "OM", "PA", "PE", "PF", "PG", "PH", "PK", "PL", "PM",
+        "PN", "PR", "PS", "PT", "PW", "PY", "QA", "RE", "RO", "RS", "RU", "RW", "SA", "SB", "SC",
+        "SD", "SE", "SG", "SH", "SI", "SJ", "SK", "SL", "SM", "SN", "SO", "SR", "SS", "ST", "SV",
+        "SX", "SY", "SZ", "TC", "TD", "TF", "TG", "TH", "TJ", "TK", "TL", "TM", "TN", "TO", "TR",
+        "TT", "TV", "TW", "TZ", "UA", "UG", "UM", "US", "UY", "UZ", "VA", "VC", "VE", "VG", "VI",
+        "VN", "VU", "WF", "WS", "YE", "YT", "ZA", "ZM", "ZW",
+    ];
+    COUNTRIES.contains(&s)
+}
+
+/// Semantic Versioning 2.0.0: `MAJOR.MINOR.PATCH(-prerelease)?(+build)?`.
+pub fn is_valid_semver(s: &str) -> bool {
+    let (version, build) = match s.split_once('+') {
+        Some((v, b)) => (v, Some(b)),
+        None => (s, None),
+    };
+    if let Some(b) = build {
+        // Build metadata: dot-separated non-empty alphanumeric+hyphen ids.
+        if b.split('.').any(|id| id.is_empty() || !id.chars().all(is_build_char)) {
+            return false;
+        }
+    }
+    let (core, prerelease) = match version.split_once('-') {
+        Some((c, p)) => (c, Some(p)),
+        None => (version, None),
+    };
+    let core_parts: Vec<&str> = core.split('.').collect();
+    if core_parts.len() != 3 {
+        return false;
+    }
+    // No leading zeros (except "0" itself) in the numeric core.
+    if core_parts
+        .iter()
+        .any(|p| !is_numeric_identifier(p) || (p.len() > 1 && p.starts_with('0')))
+    {
+        return false;
+    }
+    if let Some(pre) = prerelease {
+        for id in pre.split('.') {
+            if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+                return false;
+            }
+            // Numeric identifiers must not have leading zeros.
+            if id.chars().all(|c| c.is_ascii_digit())
+                && id.len() > 1
+                && id.starts_with('0')
+            {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn is_build_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '-'
+}
+
+/// RFC 6901 JSON Pointer: empty string, or `/`-separated tokens with `~0`/`~1`
+/// escapes (a bare `~` or `~2+` is invalid).
+pub fn is_valid_json_pointer(s: &str) -> bool {
+    if s.is_empty() {
+        return true;
+    }
+    if !s.starts_with('/') {
+        return false;
+    }
+    for token in s.split('/').skip(1) {
+        let mut chars = token.chars();
+        while let Some(c) = chars.next() {
+            if c != '~' {
+                continue;
+            }
+            match chars.next() {
+                Some('0') | Some('1') => {}
+                _ => return false,
+            }
+        }
+    }
+    true
+}
+
+fn is_numeric_identifier(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_digit())
+}
+
+/// ISO 8601 duration: `PnYnMnDTnHnMnS`, `PnW`, or with fractional seconds.
+pub fn is_valid_duration(s: &str) -> bool {
+    let Some(rest) = s.strip_prefix('P') else {
+        return false;
+    };
+    if rest.is_empty() {
+        return false;
+    }
+    // Weeks form.
+    if let Some(weeks) = rest.strip_suffix('W') {
+        return is_positive_number(weeks);
+    }
+    let (date_part, time_part) = match rest.split_once('T') {
+        Some((d, t)) => (d, Some(t)),
+        None => (rest, None),
+    };
+
+    let mut seen = [false; 3]; // Y, M, D — order enforced
+    let mut last_unit = 0usize;
+    let date_ok = if date_part.is_empty() && time_part.is_some() {
+        true // "PT…" — all components in the time part
+    } else {
+        parse_duration_components(date_part, |unit| {
+            let order = match unit {
+                'Y' => 0,
+                'M' => 1,
+                'D' => 2,
+                _ => return false,
+            };
+            if order < last_unit || seen[order] {
+                return false;
+            }
+            seen[order] = true;
+            last_unit = order;
+            true
+        })
+    };
+    if !date_ok {
+        return false;
+    }
+
+    if let Some(t) = time_part {
+        let mut seen_t = [false; 3]; // H, M, S
+        let mut last_t = 0usize;
+        if !parse_duration_components(t, |unit| {
+            let order = match unit {
+                'H' => 0,
+                'M' => 1,
+                'S' => 2,
+                _ => return false,
+            };
+            if order < last_t || seen_t[order] {
+                return false;
+            }
+            seen_t[order] = true;
+            last_t = order;
+            true
+        }) {
+            return false;
+        }
+    } else if seen.iter().all(|s| !s) {
+        return false; // "P" with nothing at all
+    }
+    true
+}
+
+/// Parse `[n]U[n]U...` duration components, calling `unit` per unit letter.
+fn parse_duration_components(s: &str, mut unit: impl FnMut(char) -> bool) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    let mut num = String::new();
+    let mut any = false;
+    for c in s.chars() {
+        if c.is_ascii_digit() || c == '.' || c == ',' {
+            num.push(c);
+            continue;
+        }
+        if !is_positive_number(&num) {
+            return false;
+        }
+        num.clear();
+        any = true;
+        if !unit(c) {
+            return false;
+        }
+    }
+    // Trailing digits without a unit letter are invalid.
+    any && num.is_empty()
+}
+
+fn is_positive_number(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars().all(|c| c.is_ascii_digit() || c == '.' || c == ',')
+        && s.chars().any(|c| c.is_ascii_digit())
+}
+
+/// RFC 3339 full-time: `HH:MM:SS(.fraction)?(Z|±HH:MM)` (leap second 60
+/// allowed).
+pub fn is_valid_time(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.len() < 8 {
+        return false;
+    }
+    if !(bytes[2] == b':' && bytes[5] == b':') {
+        return false;
+    }
+    if !digits_at(bytes, 0, 2) || !digits_at(bytes, 3, 2) || !digits_at(bytes, 6, 2) {
+        return false;
+    }
+    let hh: u32 = s[0..2].parse().unwrap_or(99);
+    let mm: u32 = s[3..5].parse().unwrap_or(99);
+    let ss: u32 = s[6..8].parse().unwrap_or(99);
+    if hh > 23 || mm > 59 || ss > 60 {
+        return false;
+    }
+    let mut rest = &s[8..];
+    if let Some(stripped) = rest.strip_prefix('.') {
+        let frac_len = stripped.chars().take_while(|c| c.is_ascii_digit()).count();
+        if frac_len == 0 {
+            return false;
+        }
+        rest = &stripped[frac_len..];
+    }
+    if rest == "Z" || rest == "z" {
+        return true;
+    }
+    if !(rest.len() == 6
+        && (rest.starts_with('+') || rest.starts_with('-'))
+        && digits_at(rest.as_bytes(), 1, 2)
+        && rest.as_bytes()[3] == b':'
+        && digits_at(rest.as_bytes(), 4, 2))
+    {
+        return false;
+    }
+    let ohh: u32 = rest[1..3].parse().unwrap_or(99);
+    let omm: u32 = rest[4..6].parse().unwrap_or(99);
+    ohh <= 23 && omm <= 59
+}
+
+fn digits_at(b: &[u8], start: usize, count: usize) -> bool {
+    b[start..start + count].iter().all(u8::is_ascii_digit)
+}
+
+
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn format_keyword_roundtrip() {
+        for (kw, f) in format_keyword_map() {
+            assert_eq!(Format::from_keyword(kw), Some(*f), "keyword {kw}");
+            assert_eq!(f.keyword(), if *kw == "url" || *kw == "iri" {
+                "uri"
+            } else if *kw == "datetime" {
+                "date-time"
+            } else if *kw == "idn-hostname" {
+                "hostname"
+            } else {
+                kw
+            });
+        }
+        assert_eq!(Format::from_keyword("nope"), None);
+    }
     use super::*;
 
     #[test]
@@ -537,5 +930,174 @@ mod tests {
     fn value_validation_only_applies_to_strings() {
         assert!(Format::Email.validate_value(&serde_json::json!(42)));
         assert!(!Format::Email.validate_value(&serde_json::json!("not-an-email")));
+    }
+
+    #[test]
+    fn time_format() {
+        for s in [
+            "00:00:00Z",
+            "23:59:60Z",       // leap second
+            "12:34:56.789+05:30",
+            "01:02:03-08:00",
+            "12:00:00z",
+        ] {
+            assert!(is_valid_time(s), "valid: {s}");
+        }
+        for s in [
+            "",
+            "12:34:56",
+            "24:00:00Z",
+            "12:60:00Z",
+            "12:34:5Z",
+            "12:34:56.",
+            "12:34:56+05:70",
+            "12-34-56Z",
+            "1234567Z",
+        ] {
+            assert!(!is_valid_time(s), "invalid: {s}");
+        }
+        assert_eq!(Format::from_keyword("time"), Some(Format::Time));
+        assert!(Format::Time.is_valid("10:20:30Z"));
+    }
+
+    #[test]
+    fn duration_format() {
+        for s in [
+            "P1Y",
+            "P3M",
+            "P10D",
+            "PT6H",
+            "P1Y2M3DT4H5M6S",
+            "P1W",
+            "PT0.5S",
+            "P2W",
+            "P1Y6M15D",
+        ] {
+            assert!(is_valid_duration(s), "valid: {s}");
+        }
+        for s in [
+            "",
+            "P",
+            "PT",
+            "1Y",
+            "P1D2M", // order violation
+            "P1Q",
+            "PW",
+            "P1",
+        ] {
+            assert!(!is_valid_duration(s), "invalid: {s}");
+        }
+    }
+
+    #[test]
+    fn phone_format() {
+        for s in [
+            "+14155550123",
+            "+41 55 550 01 23",
+            "+41-55-550-0123",
+            "+44 (0) 20 7946 0958".replace("(0) ", "").as_str(),
+            "+4155550123",
+        ] {
+            assert!(is_valid_phone(s), "valid: {s}");
+        }
+        for s in ["", "4155550123", "+", "+1234", "+12345678901234567890", "abc"] {
+            assert!(!is_valid_phone(s), "invalid: {s}");
+        }
+    }
+
+    #[test]
+    fn currency_format() {
+        assert!(is_valid_currency("USD"));
+        assert!(is_valid_currency("EUR"));
+        assert!(is_valid_currency("CHF"));
+        assert!(!is_valid_currency("usd"));
+        assert!(!is_valid_currency("US"));
+        assert!(!is_valid_currency("USDD"));
+        assert!(!is_valid_currency("XYZ"));
+    }
+
+    #[test]
+    fn iban_format() {
+        // Officially valid example IBANs (mod-97 correct).
+        for s in [
+            "GB82 WEST 1234 5698 7654 32",
+            "DE89 3704 0044 0532 0130 00",
+            "CH93 0076 2011 6238 5295 7",
+            "NL91ABNA0417164300",
+        ] {
+            assert!(is_valid_iban(s), "valid: {s}");
+        }
+        for s in [
+            "",
+            "GB82 WEST 1234 5698 7654 33", // bad check digits
+            "US82 WEST 1234 5698 7654 32", // not an IBAN country
+            "GB10 WEST 1234 5698 7654 32", // wrong check digits
+            "DExx 3704 0044 0532 0130 00",
+            "GB8", // too short
+        ] {
+            assert!(!is_valid_iban(s), "invalid: {s}");
+        }
+    }
+
+    #[test]
+    fn country_code_format() {
+        assert!(is_valid_country_code("CH"));
+        assert!(is_valid_country_code("US"));
+        assert!(is_valid_country_code("DE"));
+        assert!(!is_valid_country_code("ch"));
+        assert!(!is_valid_country_code("XX"));
+        assert!(!is_valid_country_code("U"));
+        assert!(!is_valid_country_code("USA"));
+    }
+
+    #[test]
+    fn semver_format() {
+        for s in [
+            "1.0.0",
+            "0.0.1",
+            "10.20.30",
+            "1.0.0-alpha",
+            "1.0.0-alpha.1",
+            "1.0.0-alpha.beta.1",
+            "1.0.0+build.1",
+            "1.0.0-rc.1+build.2",
+            "1.0.0-x.7.z.92",
+        ] {
+            assert!(is_valid_semver(s), "valid: {s}");
+        }
+        for s in [
+            "",
+            "1",
+            "1.0",
+            "1.0.0.0",
+            "01.0.0",
+            "1.0",
+            "v1.0.0",
+            "1.0.0-",
+            "1.0.0-01",
+            "1.0.0+",
+            "1.0.0+build..2",
+            "1.0.0-alpha..1",
+        ] {
+            assert!(!is_valid_semver(s), "invalid: {s}");
+        }
+    }
+
+    #[test]
+    fn regex_format() {
+        assert!(Format::Regex.is_valid("^[a-z]+$"));
+        assert!(Format::Regex.is_valid("\\d{4}"));
+        assert!(!Format::Regex.is_valid("[unclosed"));
+        assert!(!Format::Regex.is_valid("*invalid"));
+    }
+
+    #[test]
+    fn json_pointer_format() {
+        for s in ["", "/foo", "/foo/bar", "/foo/0", "/a~1b", "/c~0d", "/"] {
+            assert!(is_valid_json_pointer(s), "valid: {s}");
+        }
+        for s in ["foo", "a/b", "/a~", "/a~2b", "/a~~"] {
+            assert!(!is_valid_json_pointer(s), "invalid: {s}");
+        }
     }
 }

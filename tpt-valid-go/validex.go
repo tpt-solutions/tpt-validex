@@ -36,6 +36,10 @@ package validex
 // #cgo LDFLAGS: -ltpt_valid_ffi
 // #include <stdlib.h>
 // #include "tpt_validex.h"
+//
+// // Bridge to the //export trampoline below; needed so Go code can take
+// // its address as a tpt_valid_format_cb.
+// int validex_format_trampoline(void* userData, const char* value);
 import "C"
 
 import (
@@ -200,6 +204,66 @@ func (v *Validator) ValidateBatch(batch []interface{}) ([]Result, error) {
 // Version returns the native library version string.
 func Version() string {
 	return C.GoString(C.tpt_valid_version())
+}
+
+// formatRegistry maps opaque ids to Go format functions. The id is passed
+// through the C callback's user_data pointer.
+var formatRegistry = struct {
+	sync.Mutex
+	next uintptr
+	fns  map[uintptr]func(string) bool
+}{fns: make(map[uintptr]func(string) bool)}
+
+//export validex_format_trampoline
+func validex_format_trampoline(userData unsafe.Pointer, value *C.char) C.int {
+	formatRegistry.Lock()
+	fn, ok := formatRegistry.fns[uintptr(userData)]
+	formatRegistry.Unlock()
+	if !ok {
+		return 0
+	}
+	if fn(C.GoString(value)) {
+		return 1
+	}
+	return 0
+}
+
+// RegisterFormat registers a custom format assertion on this validator.
+//
+// From then on, strings in fields whose schema carries "format": name
+// (and which is not a built-in format) are validated by calling fn.
+// Pass nil as fn to unregister a name. Unregistered custom formats are
+// ignored, matching JSON Schema annotation semantics. RegisterFormat must
+// not be called concurrently with Validate.
+func (v *Validator) RegisterFormat(name string, fn func(string) bool) error {
+	if err := v.ensureOpen(); err != nil {
+		return err
+	}
+	var id uintptr
+	if fn != nil {
+		formatRegistry.Lock()
+		formatRegistry.next++
+		id = formatRegistry.next
+		formatRegistry.fns[id] = fn
+		formatRegistry.Unlock()
+	}
+
+	cName := C.CString(name)
+	defer C.free(unsafe.Pointer(cName))
+	var cb C.tpt_valid_format_cb
+	if fn != nil {
+		cb = (C.tpt_valid_format_cb)(C.validex_format_trampoline)
+	}
+	rc := C.tpt_valid_register_format(v.handle, cName, cb, unsafe.Pointer(id))
+	if rc != 0 {
+		if fn != nil {
+			formatRegistry.Lock()
+			delete(formatRegistry.fns, id)
+			formatRegistry.Unlock()
+		}
+		return errors.New("tpt-validex: RegisterFormat failed: " + C.GoString(C.tpt_valid_last_error()))
+	}
+	return nil
 }
 
 // parseErrors decodes the FFI error report: {"errors": [...]}.

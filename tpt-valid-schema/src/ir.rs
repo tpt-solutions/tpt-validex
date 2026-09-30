@@ -69,25 +69,46 @@ pub enum IrOp {
     Enum(EnumSet),
     /// `const`
     Const(Value),
-    /// `format`
+    /// `format` (built-in)
     Format(Format),
+    /// `format` that is not a built-in (validated by a runtime-registered
+    /// custom format function, if any).
+    CustomFormat(String),
     /// `items` + `minItems` + `maxItems`
     Items {
         schema: Box<IrSchema>,
         min_items: usize,
         max_items: usize,
     },
+    /// `prefixItems` + (optional) `items` for the remainder + (optional)
+    /// `unevaluatedItems` for the remainder when no `items` applies.
+    PrefixItems {
+        prefixes: Vec<IrSchema>,
+        items: Option<Box<IrSchema>>,
+        unevaluated: Option<Box<IrSchema>>,
+    },
     /// `uniqueItems: true`
     UniqueItems,
-    /// `contains`
-    Contains(Box<IrSchema>),
+    /// `contains` + `minContains` (default 1) + `maxContains`
+    Contains {
+        schema: Box<IrSchema>,
+        min: usize,
+        max: Option<usize>,
+    },
     /// Object keywords combined (exact unknown-key accounting).
     Object {
         properties: Vec<(String, IrSchema)>,
         pattern_properties: Vec<(Regex, IrSchema)>,
         additional: IrAdditional,
+        unevaluated: IrAdditional,
         required: Vec<String>,
     },
+    /// `dependentRequired` — key → keys required alongside it.
+    DependentRequired(Vec<(String, Vec<String>)>),
+    /// `dependentSchemas` — key → schema applied when present.
+    DependentSchemas(Vec<(String, IrSchema)>),
+    /// `propertyNames`
+    PropertyNames(Box<IrSchema>),
     /// `if` / `then` / `else`
     IfThenElse {
         if_: Box<IrSchema>,
@@ -128,9 +149,19 @@ fn prune_by_type(node: &mut IrSchema) {
 
         node.ops.retain(|op| match op {
             IrOp::Minimum { .. } | IrOp::Maximum { .. } | IrOp::MultipleOf(_) => numeric,
-            IrOp::MinLength(_) | IrOp::MaxLength(_) | IrOp::Pattern(_) | IrOp::Format(_) => string,
-            IrOp::Items { .. } | IrOp::UniqueItems | IrOp::Contains(_) => array,
-            IrOp::Object { .. } => object,
+            IrOp::MinLength(_)
+            | IrOp::MaxLength(_)
+            | IrOp::Pattern(_)
+            | IrOp::Format(_)
+            | IrOp::CustomFormat(_) => string,
+            IrOp::Items { .. }
+            | IrOp::PrefixItems { .. }
+            | IrOp::UniqueItems
+            | IrOp::Contains { .. } => array,
+            IrOp::Object { .. }
+            | IrOp::DependentRequired(_)
+            | IrOp::DependentSchemas(_)
+            | IrOp::PropertyNames(_) => object,
             _ => true,
         });
     }
@@ -139,11 +170,27 @@ fn prune_by_type(node: &mut IrSchema) {
     for op in &mut node.ops {
         match op {
             IrOp::Items { schema, .. } => prune_by_type(schema),
-            IrOp::Contains(schema) => prune_by_type(schema),
+            IrOp::PrefixItems {
+                prefixes,
+                items,
+                unevaluated,
+            } => {
+                for p in prefixes {
+                    prune_by_type(p);
+                }
+                if let Some(s) = items {
+                    prune_by_type(s);
+                }
+                if let Some(s) = unevaluated {
+                    prune_by_type(s);
+                }
+            }
+            IrOp::Contains { schema, .. } => prune_by_type(schema),
             IrOp::Object {
                 properties,
                 pattern_properties,
                 additional,
+                unevaluated,
                 ..
             } => {
                 for (_, s) in properties.iter_mut() {
@@ -155,7 +202,16 @@ fn prune_by_type(node: &mut IrSchema) {
                 if let IrAdditional::Schema(s) = additional {
                     prune_by_type(s);
                 }
+                if let IrAdditional::Schema(s) = unevaluated {
+                    prune_by_type(s);
+                }
             }
+            IrOp::DependentSchemas(deps) => {
+                for (_, s) in deps {
+                    prune_by_type(s);
+                }
+            }
+            IrOp::PropertyNames(s) => prune_by_type(s),
             IrOp::IfThenElse { if_, then_, else_ } => {
                 prune_by_type(if_);
                 if let Some(t) = then_ {
@@ -226,11 +282,27 @@ fn merge_bounds(node: &mut IrSchema) {
     for op in &mut node.ops {
         match op {
             IrOp::Items { schema, .. } => merge_bounds(schema),
-            IrOp::Contains(schema) => merge_bounds(schema),
+            IrOp::PrefixItems {
+                prefixes,
+                items,
+                unevaluated,
+            } => {
+                for p in prefixes {
+                    merge_bounds(p);
+                }
+                if let Some(s) = items {
+                    merge_bounds(s);
+                }
+                if let Some(s) = unevaluated {
+                    merge_bounds(s);
+                }
+            }
+            IrOp::Contains { schema, .. } => merge_bounds(schema),
             IrOp::Object {
                 properties,
                 pattern_properties,
                 additional,
+                unevaluated,
                 ..
             } => {
                 for (_, s) in properties.iter_mut() {
@@ -242,7 +314,16 @@ fn merge_bounds(node: &mut IrSchema) {
                 if let IrAdditional::Schema(s) = additional {
                     merge_bounds(s);
                 }
+                if let IrAdditional::Schema(s) = unevaluated {
+                    merge_bounds(s);
+                }
             }
+            IrOp::DependentSchemas(deps) => {
+                for (_, s) in deps {
+                    merge_bounds(s);
+                }
+            }
+            IrOp::PropertyNames(s) => merge_bounds(s),
             IrOp::IfThenElse { if_, then_, else_ } => {
                 merge_bounds(if_);
                 if let Some(t) = then_ {

@@ -22,10 +22,11 @@
 #![allow(unsafe_code)] // FFI boundary requires unsafe by definition
 
 use std::cell::RefCell;
-use std::ffi::{c_char, CStr, CString};
+use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::panic::catch_unwind;
 use std::sync::OnceLock;
 
+use tpt_valid_core::CustomFormats;
 use tpt_valid_schema::Validator;
 
 /// Opaque validator handle (see `tpt_validex.h`).
@@ -40,8 +41,40 @@ pub struct tpt_valid_result {
     _private: [u8; 0],
 }
 
+/// C callback asserting a custom `format` value. Return non-zero when
+/// `value` is valid. Must be thread-safe: it may be invoked concurrently
+/// from batch/streaming validation.
+pub type tpt_valid_format_cb =
+    unsafe extern "C" fn(user_data: *mut c_void, value: *const c_char) -> c_int;
+
 struct ValidatorBox {
     validator: Validator,
+    /// Custom format callbacks registered via `tpt_valid_register_format`;
+    /// passed to every validation call.
+    formats: CustomFormats,
+}
+
+/// Send+Sync wrapper so a C callback can cross validation threads. The
+/// callback itself is documented to be thread-safe.
+struct CFormatFn {
+    func: tpt_valid_format_cb,
+    user_data: *mut c_void,
+}
+
+unsafe impl Send for CFormatFn {}
+unsafe impl Sync for CFormatFn {}
+
+impl CFormatFn {
+    fn call(&self, value: &str) -> bool {
+        let Ok(c_value) = CString::new(value) else {
+            return false;
+        };
+        let func = self.func;
+        let user_data = self.user_data;
+        let ptr = c_value.as_ptr();
+        let rc = catch_unwind(|| unsafe { func(user_data, ptr) });
+        rc.unwrap_or(0) != 0
+    }
 }
 
 struct ResultBox {
@@ -100,9 +133,10 @@ pub unsafe extern "C" fn tpt_valid_create(schema: *const c_char) -> *mut tpt_val
             }
         };
         match Validator::new(schema_str) {
-            Ok(v) => {
-                Box::into_raw(Box::new(ValidatorBox { validator: v })) as *mut tpt_valid_handle
-            }
+            Ok(v) => Box::into_raw(Box::new(ValidatorBox {
+                validator: v,
+                formats: CustomFormats::default(),
+            })) as *mut tpt_valid_handle,
             Err(e) => {
                 set_last_error(e.to_string());
                 std::ptr::null_mut()
@@ -112,6 +146,54 @@ pub unsafe extern "C" fn tpt_valid_create(schema: *const c_char) -> *mut tpt_val
     out.unwrap_or_else(|_| {
         set_last_error("internal panic while compiling schema");
         std::ptr::null_mut()
+    })
+}
+
+/// Register a custom format assertion on a validator (see `tpt_validex.h`).
+///
+/// `name` matches the schema's `format` keyword; from then on
+/// `tpt_valid_validate` invokes `callback(user_data, value)` for strings in
+/// fields carrying that format (non-zero return = valid). Pass NULL as
+/// `callback` to unregister a name. Returns 0 on success, 1 on invalid
+/// arguments. The callback must be thread-safe.
+///
+/// # Safety
+/// `handle` must come from `tpt_valid_create` (not yet destroyed); `name`
+/// must be a valid NUL-terminated C string pointer or NULL.
+#[no_mangle]
+pub unsafe extern "C" fn tpt_valid_register_format(
+    handle: *mut tpt_valid_handle,
+    name: *const c_char,
+    callback: Option<tpt_valid_format_cb>,
+    user_data: *mut c_void,
+) -> c_int {
+    let out = catch_unwind(|| {
+        if handle.is_null() || name.is_null() {
+            set_last_error(NULL_MSG);
+            return 1;
+        }
+        let Ok(name) = CStr::from_ptr(name).to_str() else {
+            set_last_error("format name is not valid UTF-8");
+            return 1;
+        };
+        let slot = &mut (*(handle as *mut ValidatorBox)).formats;
+        match callback {
+            None => {
+                slot.remove(name);
+            }
+            Some(func) => {
+                let wrapped = CFormatFn { func, user_data };
+                slot.insert(
+                    name.to_string(),
+                    std::sync::Arc::new(move |s: &str| wrapped.call(s)),
+                );
+            }
+        }
+        0
+    });
+    out.unwrap_or_else(|_| {
+        set_last_error("internal panic while registering format");
+        1
     })
 }
 
@@ -135,7 +217,12 @@ pub unsafe extern "C" fn tpt_valid_validate(
             set_last_error(NULL_MSG);
             return std::ptr::null_mut();
         }
-        let validator = &(*(handle as *const ValidatorBox)).validator;
+        let box_handle = &*(handle as *const ValidatorBox);
+        let validator = &box_handle.validator;
+        let opts = tpt_valid_core::ValidationOptions {
+            custom_formats: box_handle.formats.clone(),
+            ..tpt_valid_core::ValidationOptions::default()
+        };
         let data_str = match CStr::from_ptr(data).to_str() {
             Ok(s) => s,
             Err(e) => {
@@ -145,7 +232,7 @@ pub unsafe extern "C" fn tpt_valid_validate(
         };
         let (valid, errors_json) = match tpt_valid_parser::parse(data_str) {
             Ok(value) => {
-                let report = validator.validate(&value);
+                let report = validator.validate_with(&value, &opts);
                 (report.is_valid(), report.to_json_string())
             }
             Err(e) => {

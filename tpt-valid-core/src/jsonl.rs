@@ -98,7 +98,7 @@ pub fn validate_jsonl_stream<R: BufRead>(
             Ok(value) => {
                 let mut collector = ErrorCollector::new(opts.fail_fast, opts.max_errors);
                 let mut path = PathCursor::new();
-                check(node, &value, &mut path, opts, &mut collector);
+                check(node, &value, &mut path, opts, &mut collector, 0);
                 let errors = collector.into_errors();
                 if errors.is_empty() {
                     stats.valid_lines += 1;

@@ -2,13 +2,16 @@
 //! dependencies (spec §3.5, §5.3).
 //!
 //! Features: quoted fields (with `""` escapes and embedded newlines), custom
-//! delimiters, per-column type inference, per-row validation with error
-//! collection, and bounded memory (rows are never all buffered; only the
-//! type-inference sample is).
+//! delimiters, schema-driven cell coercion (declared property types win;
+//! sampled inference only fills in for untyped columns), per-row validation
+//! with error collection, and bounded memory (rows are never all buffered;
+//! only the type-inference sample is).
 //!
-//! Leniency policy: content after a closing quote is accepted, invalid UTF-8
-//! decodes lossily, and blank lines are skipped entirely.
+//! Leniency policy (default): content after a closing quote is accepted,
+//! invalid UTF-8 decodes lossily, and blank lines are skipped entirely. Set
+//! [`CsvDialect::strict`] to turn the first two into parse errors.
 
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 
 use serde::Serialize;
@@ -17,6 +20,7 @@ use serde_json::{Map, Value};
 use crate::engine::{check, PathCursor, ValidationOptions};
 use crate::error::{ErrorCollector, ValidationError};
 use crate::node::ValidationNode;
+use crate::types::DataType;
 
 /// CSV dialect settings.
 #[derive(Debug, Clone)]
@@ -29,8 +33,14 @@ pub struct CsvDialect {
     /// `false`, columns are named `column_0`, `column_1`, ...
     pub has_headers: bool,
     /// Number of rows sampled for column type inference before streaming
-    /// (default 1000).
+    /// (default 1000). Inference is only used for columns whose type the
+    /// schema does not declare (see [`CsvDialect::strict`]).
     pub inference_sample: usize,
+    /// Strict parsing mode (default `false`, lenient). In lenient mode,
+    /// content after a closing quote is accepted, invalid UTF-8 decodes
+    /// lossily, and blank lines are skipped. In strict mode, content after a
+    /// closing quote and invalid UTF-8 are [`CsvParseError`]s.
+    pub strict: bool,
 }
 
 impl Default for CsvDialect {
@@ -40,6 +50,7 @@ impl Default for CsvDialect {
             quote: b'"',
             has_headers: true,
             inference_sample: 1000,
+            strict: false,
         }
     }
 }
@@ -139,6 +150,10 @@ impl<R: BufRead> CsvReader<R> {
     }
 
     /// Read the next record. Returns `Ok(None)` at end of input.
+    ///
+    /// In strict mode ([`CsvDialect::strict`]), malformed quoting and
+    /// invalid UTF-8 are [`CsvParseError`]s; lenient mode (default) accepts
+    /// content after a closing quote and decodes invalid UTF-8 lossily.
     pub fn next_record(&mut self) -> Result<Option<CsvRecord>, CsvParseError> {
         loop {
             if self.finished {
@@ -146,6 +161,7 @@ impl<R: BufRead> CsvReader<R> {
             }
             let delimiter = self.dialect.delimiter;
             let quote = self.dialect.quote;
+            let strict = self.dialect.strict;
 
             let mut fields: Vec<Vec<u8>> = vec![Vec::new()];
             let mut in_quotes = false;
@@ -154,95 +170,146 @@ impl<R: BufRead> CsvReader<R> {
             let record_line = self.physical_line + 1;
             let mut record_done = false;
 
-            while !record_done {
-                if !self.ensure(1)? {
-                    if in_quotes {
+            let result = (|| -> Result<(), CsvParseError> {
+                while !record_done {
+                    if !self.ensure(1)? {
+                        if in_quotes {
+                            self.finished = true;
+                            return Err(CsvParseError {
+                                line: record_line,
+                                message: "unterminated quoted field".into(),
+                            });
+                        }
                         self.finished = true;
-                        return Err(CsvParseError {
-                            line: record_line,
-                            message: "unterminated quoted field".into(),
-                        });
+                        return Ok(());
                     }
-                    self.finished = true;
-                    if saw_content {
-                        return Ok(Some(CsvRecord {
-                            line: record_line,
-                            fields: decode_fields(fields),
-                        }));
-                    }
-                    return Ok(None);
-                }
-                let byte = self.buffer[self.pos];
-                self.pos += 1;
+                    let byte = self.buffer[self.pos];
+                    self.pos += 1;
 
-                if in_quotes {
-                    if byte == quote {
-                        if !self.ensure(1)? {
-                            // Closing quote at EOF terminates the record.
-                            in_quotes = false;
-                            continue;
-                        }
-                        if self.buffer[self.pos] == quote {
-                            fields.last_mut().unwrap().push(quote);
-                            self.pos += 1;
+                    if in_quotes {
+                        if byte == quote {
+                            if !self.ensure(1)? {
+                                // Closing quote at EOF terminates the record.
+                                in_quotes = false;
+                                continue;
+                            }
+                            if self.buffer[self.pos] == quote {
+                                fields
+                                    .last_mut()
+                                    .expect("fields always has a current field")
+                                    .push(quote);
+                                self.pos += 1;
+                            } else {
+                                in_quotes = false;
+                                if strict {
+                                    let next = self.buffer[self.pos];
+                                    if next != delimiter && next != b'\r' && next != b'\n' {
+                                        return Err(CsvParseError {
+                                            line: record_line,
+                                            message: "unexpected content after closing quote"
+                                                .into(),
+                                        });
+                                    }
+                                }
+                            }
                         } else {
-                            in_quotes = false;
+                            fields
+                                .last_mut()
+                                .expect("fields always has a current field")
+                                .push(byte);
+                            saw_content = true;
                         }
-                    } else {
-                        fields.last_mut().unwrap().push(byte);
-                        saw_content = true;
+                        continue;
                     }
-                    continue;
-                }
 
-                if field_start && byte == quote {
-                    in_quotes = true;
-                    field_start = false;
-                    saw_content = true;
-                    continue;
-                }
-
-                match byte {
-                    b if b == delimiter => {
-                        fields.push(Vec::new());
-                        field_start = true;
-                        saw_content = true;
-                    }
-                    b'\r' => {
-                        if self.ensure(1)? && self.buffer[self.pos] == b'\n' {
-                            self.pos += 1;
-                        }
-                        self.physical_line += 1;
-                        record_done = true;
-                    }
-                    b'\n' => {
-                        self.physical_line += 1;
-                        record_done = true;
-                    }
-                    b => {
-                        fields.last_mut().unwrap().push(b);
+                    if field_start && byte == quote {
+                        in_quotes = true;
                         field_start = false;
                         saw_content = true;
+                        continue;
+                    }
+
+                    match byte {
+                        b if b == delimiter => {
+                            fields.push(Vec::new());
+                            field_start = true;
+                            saw_content = true;
+                        }
+                        b'\r' => {
+                            if self.ensure(1)? && self.buffer[self.pos] == b'\n' {
+                                self.pos += 1;
+                            }
+                            self.physical_line += 1;
+                            record_done = true;
+                        }
+                        b'\n' => {
+                            self.physical_line += 1;
+                            record_done = true;
+                        }
+                        b => {
+                            fields
+                                .last_mut()
+                                .expect("fields always has a current field")
+                                .push(b);
+                            field_start = false;
+                            saw_content = true;
+                        }
                     }
                 }
+                Ok(())
+            })();
+
+            // A strict-mode violation or I/O failure aborts the reader.
+            if let Err(e) = result {
+                self.finished = true;
+                return Err(e);
+            }
+
+            // End of input: flush the final record if it has content.
+            if !record_done {
+                self.finished = true;
+                if !saw_content && fields.len() == 1 && fields[0].is_empty() {
+                    return Ok(None);
+                }
+                return decode_fields(fields, strict, record_line).map(|fields| {
+                    Some(CsvRecord {
+                        line: record_line,
+                        fields,
+                    })
+                });
             }
 
             // Skip blank lines entirely.
             if !saw_content && fields.len() == 1 && fields[0].is_empty() {
                 continue;
             }
-            return Ok(Some(CsvRecord {
-                line: record_line,
-                fields: decode_fields(fields),
-            }));
+            return decode_fields(fields, strict, record_line).map(|fields| {
+                Some(CsvRecord {
+                    line: record_line,
+                    fields,
+                })
+            });
         }
     }
 }
 
-fn decode_fields(fields: Vec<Vec<u8>>) -> Vec<String> {
+fn decode_fields(
+    fields: Vec<Vec<u8>>,
+    strict: bool,
+    line: usize,
+) -> Result<Vec<String>, CsvParseError> {
     fields
         .into_iter()
-        .map(|f| String::from_utf8_lossy(&f).into_owned())
+        .map(|f| {
+            if strict {
+                String::from_utf8(f).map_err(|_| CsvParseError {
+                    line,
+                    message: "invalid UTF-8 in CSV field".into(),
+                })
+            } else {
+                Ok(String::from_utf8_lossy(&f).into_owned())
+            }
+        })
         .collect()
 }
 
@@ -294,10 +361,14 @@ pub struct CsvStats {
 /// Stream-validate a CSV file against a schema whose object properties are
 /// the column names.
 ///
-/// Column values are type-inferred (`bool`/`integer`/`number`/`string`;
-/// empty cells become `null`) from up to [`CsvDialect::inference_sample`]
-/// rows, then rows are validated one at a time with bounded memory. `on_row`
-/// receives each [`RowOutcome`]; return `false` from it to stop early.
+/// Column values are coerced by the schema's declared property type
+/// (`boolean` / `integer` / `number` / `string`; string-typed columns keep
+/// their raw text — leading zeros, `+`-prefixed phone numbers and similar
+/// are preserved). Columns with no declared type fall back to type
+/// inference (`bool`/`integer`/`number`/`string`) from up to
+/// [`CsvDialect::inference_sample`] rows; empty cells become `null`. Rows
+/// are validated one at a time with bounded memory. `on_row` receives each
+/// [`RowOutcome`]; return `false` from it to stop early.
 ///
 /// # Examples
 ///
@@ -340,7 +411,7 @@ pub fn validate_csv_stream<R: BufRead>(
         let value = record_to_value(names, types, &record.fields);
         let mut collector = ErrorCollector::new(opts.fail_fast, opts.max_errors);
         let mut path = PathCursor::new();
-        check(node, &value, &mut path, opts, &mut collector);
+        check(node, &value, &mut path, opts, &mut collector, 0);
         let errors = collector.into_errors();
         if errors.is_empty() {
             stats.valid_rows += 1;
@@ -393,7 +464,9 @@ pub fn validate_csv_stream<R: BufRead>(
     } else {
         (0..width).map(|i| format!("column_{i}")).collect()
     };
-    let types = infer_column_types(sample.iter().map(|r| r.fields.clone()), width);
+    let declared = schema_column_types(node);
+    let inferred = infer_column_types(sample.iter().map(|r| r.fields.clone()), width);
+    let types = resolve_column_types(&names, &declared, inferred);
 
     for record in sample {
         if !process_record(node, &names, &types, opts, record, &mut stats, &mut on_row) {
@@ -406,6 +479,121 @@ pub fn validate_csv_stream<R: BufRead>(
         }
     }
     Ok(stats)
+}
+
+/// Extract the schema-declared type of each top-level object property from a
+/// compiled state machine, for schema-driven CSV coercion. Properties whose
+/// type the schema does not state directly (absent, multi-type without a
+/// string/numeric dominant, or only expressible through arbitrary
+/// combinators) are omitted and fall back to inference.
+pub fn schema_column_types(node: &ValidationNode) -> HashMap<String, DataType> {
+    let mut out = HashMap::new();
+    collect_declared_types(node, &mut out);
+    out
+}
+
+fn collect_declared_types(node: &ValidationNode, out: &mut HashMap<String, DataType>) {
+    match node {
+        ValidationNode::CheckAll(seq) | ValidationNode::CheckAllOf(seq) => {
+            for sub in seq {
+                collect_declared_types(sub, out);
+            }
+        }
+        ValidationNode::CheckObjectEx(shape) => {
+            for (name, sub) in &shape.properties {
+                if let Some(t) = declared_property_type(sub) {
+                    out.insert(name.clone(), t);
+                }
+            }
+        }
+        ValidationNode::CheckObject(properties) => {
+            for (name, sub) in properties {
+                if let Some(t) = declared_property_type(sub) {
+                    out.insert(name.clone(), t);
+                }
+            }
+        }
+        ValidationNode::CheckField(name, sub) => {
+            // Root-level field wrapper (schema without an object node).
+            if let Some(t) = declared_property_type(sub) {
+                out.insert(name.clone(), t);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The type a property sub-schema declares, if unambiguous.
+fn declared_property_type(node: &ValidationNode) -> Option<DataType> {
+    match node {
+        ValidationNode::CheckType(t) => Some(*t),
+        ValidationNode::CheckAll(seq) => {
+            // Conjunction: all declared types must agree.
+            let mut found: Option<DataType> = None;
+            for sub in seq {
+                if let Some(t) = declared_property_type(sub) {
+                    match found {
+                        Some(prev) if prev != t => return None,
+                        _ => found = Some(t),
+                    }
+                }
+            }
+            found
+        }
+        ValidationNode::CheckAnyOf(children) => {
+            // `"type": ["string", "null"]` compiles to anyOf of type checks.
+            // CSV cells are text, so a single non-null alternative decides
+            // the coercion; anything else is ambiguous.
+            let mut distinct: Vec<DataType> = Vec::new();
+            for child in children {
+                let t = declared_property_type(child)?;
+                if !distinct.contains(&t) {
+                    distinct.push(t);
+                }
+            }
+            let non_null: Vec<DataType> = distinct
+                .into_iter()
+                .filter(|t| !matches!(t, DataType::Null))
+                .collect();
+            if non_null.len() == 1 {
+                Some(non_null[0])
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Map a schema-declared [`DataType`] to the CSV coercion applied to cells.
+/// Non-scalar types and `null` keep their raw text (they fail validation,
+/// which is the correct outcome for, say, an object in a CSV cell).
+fn column_type_for_datatype(t: DataType) -> ColumnType {
+    match t {
+        DataType::Boolean => ColumnType::Boolean,
+        DataType::Integer => ColumnType::Integer,
+        DataType::Number => ColumnType::Float,
+        _ => ColumnType::String,
+    }
+}
+
+/// Combine schema-declared and inferred column types: declared wins;
+/// inference is the fallback for untyped columns.
+fn resolve_column_types(
+    names: &[String],
+    declared: &HashMap<String, DataType>,
+    inferred: Vec<ColumnType>,
+) -> Vec<ColumnType> {
+    names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            declared
+                .get(name)
+                .map(|t| column_type_for_datatype(*t))
+                .unwrap_or_else(|| inferred.get(i).copied().unwrap_or(ColumnType::String))
+        })
+        .collect()
 }
 
 /// Infer a [`ColumnType`] per column from raw rows.
@@ -792,5 +980,201 @@ mod tests {
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].0, 3); // line 3
         assert_eq!(errors[0].1[0].path, "$.age");
+    }
+
+    #[test]
+    fn schema_declared_string_columns_keep_raw_text() {
+        // Regression: zip codes with leading zeros and +-country-code phone
+        // numbers in `type: string` columns must not be coerced to numbers.
+        let node = ValidationNode::all(vec![
+            ValidationNode::CheckType(DataType::Object),
+            ValidationNode::CheckObjectEx(crate::node::ObjectShape {
+                properties: vec![
+                    (
+                        "zip".into(),
+                        ValidationNode::all(vec![
+                            ValidationNode::CheckType(DataType::String),
+                            ValidationNode::CheckPattern(Box::new(
+                                regex::Regex::new(r"^\d{5}$").unwrap(),
+                            )),
+                        ]),
+                    ),
+                    ("phone".into(), ValidationNode::CheckType(DataType::String)),
+                ],
+                ..Default::default()
+            }),
+        ]);
+        let data = "zip,phone\n01234,+4155550123\n";
+        let mut valid_value = None;
+        let stats = validate_csv_stream(
+            &node,
+            Cursor::new(data),
+            &Default::default(),
+            &ValidationOptions::default(),
+            |row| match row {
+                RowOutcome::Valid { value, .. } => {
+                    valid_value = Some(value);
+                    true
+                }
+                other => panic!("expected valid row, got {other:?}"),
+            },
+        )
+        .unwrap();
+        assert_eq!(stats.valid_rows, 1);
+        let v = valid_value.unwrap();
+        assert_eq!(v["zip"], json!("01234"), "leading zero preserved");
+        assert_eq!(v["phone"], json!("+4155550123"), "+ prefix preserved");
+    }
+
+    #[test]
+    fn schema_declared_numeric_columns_coerce_and_validate() {
+        let node = ValidationNode::all(vec![
+            ValidationNode::CheckType(DataType::Object),
+            ValidationNode::CheckField(
+                "age".into(),
+                Box::new(ValidationNode::all(vec![
+                    ValidationNode::CheckType(DataType::Integer),
+                    ValidationNode::CheckMinimum(0.0),
+                ])),
+            ),
+        ]);
+        // "030" coerces to integer 30 by the declared type even though the
+        // first sampled row would infer Integer anyway.
+        let data = "age\n030\n-1\n";
+        let (stats, errors) = validate_csv_bytes(
+            &node,
+            data.as_bytes(),
+            &Default::default(),
+            &ValidationOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(stats.valid_rows, 1);
+        assert_eq!(stats.invalid_rows, 1);
+        assert_eq!(errors[0].1[0].path, "$.age");
+    }
+
+    #[test]
+    fn schema_nullable_string_type_coerces_as_string() {
+        // `"type": ["string", "null"]` → text column (empty cell → null).
+        let node = ValidationNode::CheckField(
+            "note".into(),
+            Box::new(ValidationNode::CheckAnyOf(vec![
+                ValidationNode::CheckType(DataType::String),
+                ValidationNode::CheckType(DataType::Null),
+            ])),
+        );
+        let data = "id,note\n1,0012\n2,\n";
+        let mut values = Vec::new();
+        validate_csv_stream(
+            &node,
+            Cursor::new(data),
+            &Default::default(),
+            &ValidationOptions::default(),
+            |row| {
+                if let RowOutcome::Valid { value, .. } = row {
+                    values.push(value);
+                }
+                true
+            },
+        )
+        .unwrap();
+        assert_eq!(values.len(), 2);
+        assert_eq!(values[0]["note"], json!("0012"));
+        assert_eq!(values[1]["note"], json!(null));
+    }
+
+    #[test]
+    fn untyped_columns_still_use_inference() {
+        // Schema says nothing about `n` → sampled inference applies.
+        let node = ValidationNode::CheckType(DataType::Object);
+        let data = "n\n1\n2\n";
+        let mut values = Vec::new();
+        validate_csv_stream(
+            &node,
+            Cursor::new(data),
+            &Default::default(),
+            &ValidationOptions::default(),
+            |row| {
+                if let RowOutcome::Valid { value, .. } = row {
+                    values.push(value);
+                }
+                true
+            },
+        )
+        .unwrap();
+        assert_eq!(values[0]["n"], json!(1), "inferred integer");
+    }
+
+    #[test]
+    fn strict_mode_rejects_content_after_closing_quote() {
+        let data = "a,b\n\"oops\"garbage,2\n";
+        let strict = CsvDialect {
+            strict: true,
+            ..Default::default()
+        };
+        let mut r = CsvReader::with_dialect(Cursor::new(data), strict);
+        let _ = r.next_record().unwrap().unwrap(); // header parses fine
+        let e = r.next_record().unwrap_err();
+        assert!(e.message.contains("after closing quote"));
+
+        // Lenient mode (default) accepts it.
+        let mut lenient = CsvReader::new(Cursor::new(data));
+        let _ = lenient.next_record().unwrap().unwrap();
+        let rec = lenient.next_record().unwrap().unwrap();
+        assert_eq!(rec.fields, vec!["oopsgarbage", "2"]);
+    }
+
+    #[test]
+    fn strict_mode_rejects_invalid_utf8() {
+        let data = b"a\n\"caf\xff\xe9\"\n";
+        let strict = CsvDialect {
+            strict: true,
+            ..Default::default()
+        };
+        let mut r = CsvReader::with_dialect(Cursor::new(&data[..]), strict);
+        let _ = r.next_record().unwrap().unwrap();
+        let e = r.next_record().unwrap_err();
+        assert!(e.message.contains("UTF-8"));
+
+        // Lenient mode decodes lossily.
+        let mut lenient = CsvReader::new(Cursor::new(&data[..]));
+        let _ = lenient.next_record().unwrap().unwrap();
+        let rec = lenient.next_record().unwrap().unwrap();
+        assert_eq!(rec.fields[0], "caf\u{fffd}\u{fffd}");
+    }
+
+    #[test]
+    fn strict_mode_still_accepts_normal_csv() {
+        let data = "a,b\n\"hello, world\",\"say \"\"hi\"\"\"\n1,2\n";
+        let strict = CsvDialect {
+            strict: true,
+            ..Default::default()
+        };
+        let mut r = CsvReader::with_dialect(Cursor::new(data), strict);
+        assert_eq!(r.next_record().unwrap().unwrap().fields, vec!["a", "b"]);
+        assert_eq!(
+            r.next_record().unwrap().unwrap().fields,
+            vec!["hello, world", "say \"hi\""]
+        );
+        assert_eq!(r.next_record().unwrap().unwrap().fields, vec!["1", "2"]);
+        assert!(r.next_record().unwrap().is_none());
+    }
+
+    #[test]
+    fn strict_parse_error_is_fatal_in_stream() {
+        let node = ValidationNode::CheckType(DataType::Object);
+        let data = "a\n\"x\"y\n";
+        let strict = CsvDialect {
+            strict: true,
+            ..Default::default()
+        };
+        let result = validate_csv_stream(
+            &node,
+            Cursor::new(data),
+            &strict,
+            &ValidationOptions::default(),
+            |_row| true,
+        );
+        assert!(result.is_err());
     }
 }

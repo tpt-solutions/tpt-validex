@@ -57,7 +57,7 @@ consequences:
 | `$id` / `$anchor` / `$defs` / `definitions` | ⚪ | ignored; subschemas are still validated in place |
 | `$ref` | ❌ | reference resolution not implemented — inline the referenced schema (helpful error) |
 | `$dynamicRef` / `$dynamicAnchor` | ❌ | not implemented |
-| `dependsRequired` | ❌ | not implemented |
+| `dependentRequired` | ❌ | not implemented |
 | `title`, `description`, `default`, `examples`, `deprecated`, `readOnly`, `writeOnly` | ⚪ | annotations, ignored |
 
 ## Formats (spec §5.4)

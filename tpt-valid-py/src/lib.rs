@@ -174,24 +174,90 @@ fn flow_err(e: tpt_valid_schema::FlowError) -> PyErr {
 #[pyclass]
 struct Validator {
     inner: RustValidator,
+    /// Custom format callables registered for non-built-in `format` names.
+    formats: std::collections::HashMap<String, pyo3::Py<PyAny>>,
+}
+
+/// Wrap one Python callable as a core [`FormatFn`]: the callable receives
+/// the string under test and its truthiness decides validity.
+fn make_format_fn(func: pyo3::Py<PyAny>) -> tpt_valid_core::FormatFn {
+    std::sync::Arc::new(move |value: &str| {
+        pyo3::Python::attach(|py| {
+            // Cheap per-call refcount bump: the callable itself is shared.
+            let callable = func.clone_ref(py);
+            callable
+                .bind(py)
+                .call1((value,))
+                .ok()
+                .and_then(|r| r.is_truthy().ok())
+                .unwrap_or(false)
+        })
+    })
+}
+
+impl Validator {
+    /// Build validation options carrying the registered format callables.
+    /// Callables are invoked with the string under test; a falsy return
+    /// rejects it.
+    fn build_opts(&self, py: Python<'_>) -> ValidationOptions {
+        let mut opts = ValidationOptions::default();
+        for (name, func) in &self.formats {
+            let f = make_format_fn(func.clone_ref(py));
+            opts.custom_formats.insert(name.clone(), f);
+        }
+        opts
+    }
 }
 
 #[pymethods]
 impl Validator {
     /// Compile a JSON Schema from a dict or a JSON string.
+    ///
+    /// `formats` optionally maps non-built-in `format` names to Python
+    /// callables; each callable receives the string under test and returns
+    /// whether it is valid. Unregistered custom formats are ignored,
+    /// matching JSON Schema annotation semantics.
     #[new]
-    fn new(schema: &Bound<'_, PyAny>) -> PyResult<Self> {
+    #[pyo3(signature = (schema, formats=None))]
+    fn new(
+        py: Python<'_>,
+        schema: &Bound<'_, PyAny>,
+        formats: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<Self> {
         let schema_value = py_to_value(schema)?;
         let inner = RustValidator::from_value(&schema_value)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        Ok(Validator { inner })
+        let mut registered = std::collections::HashMap::new();
+        if let Some(formats) = formats {
+            for (key, value) in formats.iter() {
+                let name = key
+                    .cast::<PyString>()
+                    .map_err(|_| PyValueError::new_err("format names must be strings"))?
+                    .to_str()?
+                    .to_owned();
+                if !value.is_callable() {
+                    return Err(PyValueError::new_err(format!(
+                        "format \"{name}\" must be callable"
+                    )));
+                }
+                registered.insert(name, value.clone().unbind());
+            }
+        }
+        let _ = py;
+        Ok(Validator {
+            inner,
+            formats: registered,
+        })
     }
 
     /// Compile from a schema JSON string.
     #[staticmethod]
     fn from_json(schema: &str) -> PyResult<Self> {
         let inner = RustValidator::new(schema).map_err(|e| PyValueError::new_err(e.to_string()))?;
-        Ok(Validator { inner })
+        Ok(Validator {
+            inner,
+            formats: std::collections::HashMap::new(),
+        })
     }
 
     /// Validate a single object. Returns `(is_valid, errors)` where `errors`
@@ -203,7 +269,8 @@ impl Validator {
         data: &Bound<'py, PyAny>,
     ) -> PyResult<(bool, Bound<'py, PyList>)> {
         let value = py_to_value_fast(py, data)?;
-        let report = self.inner.validate(&value);
+        let opts = self.build_opts(py);
+        let report = self.inner.validate_with(&value, &opts);
         let errors = errors_list(py, &report.errors)?;
         Ok((report.is_valid(), errors))
     }
@@ -211,7 +278,8 @@ impl Validator {
     /// Boolean-only validation (fail-fast, no error materialization).
     fn is_valid(&self, py: Python<'_>, data: &Bound<'_, PyAny>) -> PyResult<bool> {
         let value = py_to_value_fast(py, data)?;
-        Ok(self.inner.is_valid(&value))
+        let opts = self.build_opts(py);
+        Ok(tpt_valid_core::validate_value(self.inner.root(), &value, &opts))
     }
 
     /// Validate a list of objects in parallel. Returns a list of
@@ -243,7 +311,10 @@ impl Validator {
                 values
             }
         };
-        let outcomes = py.detach(|| self.inner.validate_batch(&values));
+        let opts = self.build_opts(py);
+        let outcomes = py.detach(move || {
+            tpt_valid_core::validate_batch(self.inner.root(), &values, &opts)
+        });
         Ok(outcomes
             .into_iter()
             .map(|outcome| BatchResult {
@@ -278,6 +349,7 @@ impl Validator {
             has_headers,
             ..CsvDialect::default()
         };
+        let opts = self.build_opts(py);
 
         let input = File::open(input_path)
             .map_err(|e| PyValueError::new_err(format!("cannot open input: {e}")))?;
@@ -293,7 +365,7 @@ impl Validator {
                         &mut valid_out,
                         &mut errors_out,
                         &dialect,
-                        &ValidationOptions::default(),
+                        &opts,
                     )
                     .map_err(flow_err)?
             }
@@ -301,31 +373,19 @@ impl Validator {
                 let mut valid_out = BufWriter::new(File::create(v).map_err(io_err)?);
                 let sink: Sink = std::io::sink();
                 self.inner
-                    .validate_csv_to(
-                        reader,
-                        &mut valid_out,
-                        sink,
-                        &dialect,
-                        &ValidationOptions::default(),
-                    )
+                    .validate_csv_to(reader, &mut valid_out, sink, &dialect, &opts)
                     .map_err(flow_err)?
             }
             (None, Some(e)) => {
                 let mut errors_out = BufWriter::new(File::create(e).map_err(io_err)?);
                 self.inner
-                    .validate_csv_to(
-                        reader,
-                        std::io::sink(),
-                        &mut errors_out,
-                        &dialect,
-                        &ValidationOptions::default(),
-                    )
+                    .validate_csv_to(reader, std::io::sink(), &mut errors_out, &dialect, &opts)
                     .map_err(flow_err)?
             }
             (None, None) => {
                 let (stats, _errors) = self
                     .inner
-                    .validate_csv(reader, &dialect, &ValidationOptions::default())
+                    .validate_csv(reader, &dialect, &opts)
                     .map_err(flow_err)?;
                 stats
             }
@@ -346,16 +406,17 @@ impl Validator {
         let input = File::open(input_path)
             .map_err(|e| PyValueError::new_err(format!("cannot open input: {e}")))?;
         let reader = BufReader::with_capacity(64 * 1024, input);
+        let opts = self.build_opts(py);
         let stats = match errors_output {
             Some(e) => {
                 let mut errors_out = BufWriter::new(File::create(e).map_err(io_err)?);
                 self.inner
-                    .validate_jsonl_to(reader, &mut errors_out, &ValidationOptions::default())
+                    .validate_jsonl_to(reader, &mut errors_out, &opts)
                     .map_err(io_err)?
             }
             None => self
                 .inner
-                .validate_jsonl(reader, &ValidationOptions::default())
+                .validate_jsonl(reader, &opts)
                 .map_err(io_err)?,
         };
         let dict = PyDict::new(py);

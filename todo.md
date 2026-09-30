@@ -261,13 +261,13 @@ and the performance targets we do not meet (documented honestly in
 
 ## Phase 9: Bugs & Hardening (from 2026-09-30 review)
 
-- [ ] **CSV: schema-driven coercion** — coerce cells by the schema's declared property type instead of sampled inference (fixes `01234` zip / `+4155550123` phone in `type: string` columns being turned into integers); inference only as fallback for untyped properties
-- [ ] Add max nesting depth (`max_depth`, default ~128) to the schema reader (`tpt-valid-schema/src/json.rs`) and the validation engine; regression tests with 100k-deep input; verify FFI/WASM cannot stack-overflow
-- [ ] `SchemaCache`: replace clear-on-overflow with LRU; key by hash of schema text
-- [ ] Remove committed build artifacts (`tests/c_example/example.exe`, `tpt-valid-wasm/pkg/*`) and add to `.gitignore`
-- [ ] Document invariants (or replace with `?`/`expect`) for non-test `unwrap()` at `format.rs:125`, `node.rs:217`
-- [ ] CSV `strict` option (reject content after closing quote and invalid UTF-8; currently lenient)
-- [ ] Fix `dependsRequired` → `dependentRequired` naming in `docs/compliance.md`
+- [x] **CSV: schema-driven coercion** — coerce cells by the schema's declared property type instead of sampled inference (fixes `01234` zip / `+4155550123` phone in `type: string` columns being turned into integers); inference only as fallback for untyped properties (`tpt-valid-core/src/csv.rs`: `schema_column_types` / `resolve_column_types`)
+- [x] Add max nesting depth (`max_depth`, default 128) to the schema reader (`tpt-valid-schema/src/json.rs`: `from_str_with_limit`), the AST parser (`ast.rs`: `MAX_SCHEMA_DEPTH`), and the validation engine (`ValidationOptions::max_depth`); regression tests with 100k-deep input (`deep_schema_100k_is_rejected_not_overflow`, `deep_document_100k_hits_guard_cleanly`). Data parsing was already bounded (jiter recursion limit 200, serde_json 128), so FFI/WASM input cannot stack-overflow; the engine additionally rejects programmatically-built deep values without cloning them into errors
+- [x] `SchemaCache`: replace clear-on-overflow with LRU eviction; key by hash of schema text (`cache.rs`)
+- [x] Remove committed build artifacts (`tests/c_example/example.exe`, `tpt-valid-wasm/pkg/*`) and add to `.gitignore` (`*.exe`, `/tpt-valid-wasm/pkg/`, C example outputs)
+- [x] Document invariants (or replace with `?`/`expect`) for non-test `unwrap()` at `format.rs:125`, `node.rs:217` (now `expect` with the invariant stated; CSV reader `last_mut` sites likewise)
+- [x] CSV `strict` option (reject content after closing quote and invalid UTF-8; `CsvDialect::strict`, default lenient)
+- [x] Fix `dependsRequired` → `dependentRequired` naming in `docs/compliance.md`
 
 ## Phase 10: JSON Schema Coverage
 

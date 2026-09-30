@@ -7,6 +7,54 @@ use crate::error::{ErrorCollector, ValidationError};
 use crate::node::{AdditionalProperties, EnumSet, ObjectShape, ValidationNode};
 use crate::types::{json_type_name, value_as_f64};
 
+/// Default maximum instance nesting depth the engine will traverse
+/// (object/array levels). Matches serde_json's parser recursion limit, so
+/// documents that pass parsing always validate without hitting the guard.
+pub const DEFAULT_MAX_DEPTH: usize = 128;
+
+/// A custom format assertion: `true` = valid.
+pub type FormatFn = std::sync::Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
+/// Runtime-registered custom format functions, keyed by format name.
+/// Registered names are consulted by [`ValidationNode::CheckCustomFormat`]
+/// nodes (emitted for `format` keywords that are not built-in); unregistered
+/// names are ignored per Draft 2020-12 §7.2.3.
+#[derive(Clone, Default)]
+pub struct CustomFormats(std::collections::HashMap<String, FormatFn>);
+
+impl CustomFormats {
+    /// Register (or replace) a format function.
+    pub fn insert(&mut self, name: impl Into<String>, f: FormatFn) {
+        self.0.insert(name.into(), f);
+    }
+
+    /// Look up a format function.
+    pub fn get(&self, name: &str) -> Option<&FormatFn> {
+        self.0.get(name)
+    }
+
+    /// Remove a format function, returning it.
+    pub fn remove(&mut self, name: &str) -> Option<FormatFn> {
+        self.0.remove(name)
+    }
+
+    /// Number of registered formats.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether no formats are registered.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl std::fmt::Debug for CustomFormats {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_set().entries(self.0.keys()).finish()
+    }
+}
+
 /// Options controlling a validation run.
 #[derive(Debug, Clone)]
 pub struct ValidationOptions {
@@ -15,6 +63,13 @@ pub struct ValidationOptions {
     pub fail_fast: bool,
     /// Cap on collected errors per instance. Default: 1000.
     pub max_errors: usize,
+    /// Maximum instance nesting depth (object/array levels) the engine will
+    /// traverse before reporting a `maxDepth` error instead of recursing
+    /// further. Protects against stack overflow on pathologically nested
+    /// documents. Default: [`DEFAULT_MAX_DEPTH`] (128).
+    pub max_depth: usize,
+    /// Custom format functions (see [`CustomFormats`]).
+    pub custom_formats: CustomFormats,
 }
 
 impl Default for ValidationOptions {
@@ -22,6 +77,8 @@ impl Default for ValidationOptions {
         Self {
             fail_fast: false,
             max_errors: crate::error::DEFAULT_MAX_ERRORS,
+            max_depth: DEFAULT_MAX_DEPTH,
+            custom_formats: CustomFormats::default(),
         }
     }
 }
@@ -32,7 +89,20 @@ impl ValidationOptions {
         Self {
             fail_fast: true,
             max_errors: 1,
+            max_depth: DEFAULT_MAX_DEPTH,
+            custom_formats: CustomFormats::default(),
         }
+    }
+
+    /// Register a custom format function for `name` (builder style).
+    pub fn with_format(
+        mut self,
+        name: impl Into<String>,
+        f: impl Fn(&str) -> bool + Send + Sync + 'static,
+    ) -> Self {
+        self.custom_formats
+            .insert(name, std::sync::Arc::new(move |s| f(s)));
+        self
     }
 }
 
@@ -59,7 +129,7 @@ pub fn validate(
 ) -> Vec<ValidationError> {
     let mut collector = ErrorCollector::new(opts.fail_fast, opts.max_errors);
     let mut path = PathCursor::new();
-    check(node, value, &mut path, opts, &mut collector);
+    check(node, value, &mut path, opts, &mut collector, 0);
     collector.into_errors()
 }
 
@@ -68,7 +138,7 @@ pub fn validate(
 pub fn validate_value(node: &ValidationNode, value: &Value, opts: &ValidationOptions) -> bool {
     let mut collector = ErrorCollector::new(true, 1);
     let mut path = PathCursor::new();
-    check(node, value, &mut path, opts, &mut collector);
+    check(node, value, &mut path, opts, &mut collector, 0);
     collector.is_valid()
 }
 
@@ -114,15 +184,33 @@ fn itoa_buf(n: usize) -> String {
     n.to_string()
 }
 
-/// Main recursive traversal.
+/// Main recursive traversal. `depth` counts object/array levels descended
+/// into (not combinator nesting, which re-visits the same instance) and is
+/// capped by `opts.max_depth`.
 pub(crate) fn check(
     node: &ValidationNode,
     value: &Value,
     path: &mut PathCursor,
     opts: &ValidationOptions,
     out: &mut ErrorCollector,
+    depth: usize,
 ) {
     if out.stopped() {
+        return;
+    }
+    if depth > opts.max_depth {
+        // Deliberately no `.with_value(...)`: the instance here is deeper
+        // than the limit, and cloning/formatting it would itself recurse
+        // unboundedly (the very thing this guard prevents).
+        out.push(ValidationError::new(
+            path.as_str(),
+            format!(
+                "Document nesting exceeds the maximum depth of {} levels",
+                opts.max_depth
+            ),
+            format!("maxDepth {}", opts.max_depth),
+            format!("depth > {}", opts.max_depth),
+        ));
         return;
     }
     match node {
@@ -143,7 +231,7 @@ pub(crate) fn check(
                 if out.stopped() {
                     return;
                 }
-                check(sub, value, path, opts, out);
+                check(sub, value, path, opts, out, depth);
             }
         }
         ValidationNode::CheckType(expected) => {
@@ -167,7 +255,7 @@ pub(crate) fn check(
             if let Value::Object(map) = value {
                 if let Some(v) = map.get(name) {
                     path.push_field(name);
-                    check(inner, v, path, opts, out);
+                    check(inner, v, path, opts, out, depth + 1);
                     path.pop();
                 }
             }
@@ -228,6 +316,38 @@ pub(crate) fn check(
                             format!("{v} is not a multiple of {divisor}"),
                             format!("multiple of {divisor}"),
                             v.to_string(),
+                        )
+                        .with_value(value.clone()),
+                    );
+                }
+            }
+        }
+        ValidationNode::CheckMinProperties(bound) => {
+            if let Value::Object(map) = value {
+                let len = map.len();
+                if len < *bound {
+                    out.push(
+                        ValidationError::new(
+                            path.as_str(),
+                            format!("Expected at least {bound} properties, got {len}"),
+                            format!("minProperties {bound}"),
+                            len.to_string(),
+                        )
+                        .with_value(value.clone()),
+                    );
+                }
+            }
+        }
+        ValidationNode::CheckMaxProperties(bound) => {
+            if let Value::Object(map) = value {
+                let len = map.len();
+                if len > *bound {
+                    out.push(
+                        ValidationError::new(
+                            path.as_str(),
+                            format!("Expected at most {bound} properties, got {len}"),
+                            format!("maxProperties {bound}"),
+                            len.to_string(),
                         )
                         .with_value(value.clone()),
                     );
@@ -324,6 +444,43 @@ pub(crate) fn check(
                 }
             }
         }
+        ValidationNode::CheckCustomFormat(name) => {
+            if let Value::String(s) = value {
+                if let Some(f) = opts.custom_formats.get(name) {
+                    if !f(s) {
+                        out.push(
+                            ValidationError::new(
+                                path.as_str(),
+                                format!("Invalid {name} format"),
+                                name.clone(),
+                                truncate_display(s, 48),
+                            )
+                            .with_value(value.clone()),
+                        );
+                    }
+                }
+                // Unregistered custom formats are ignored (Draft 2020-12
+                // §7.2.3: format is an annotation unless asserted).
+            }
+        }
+        ValidationNode::CheckPrefixItems(prefixes, items, unevaluated) => {
+            if let Value::Array(arr) = value {
+                for (i, item) in arr.iter().enumerate() {
+                    if out.stopped() {
+                        return;
+                    }
+                    path.push_index(i);
+                    if let Some(prefix) = prefixes.get(i) {
+                        check(prefix, item, path, opts, out, depth + 1);
+                    } else if let Some(rest) = items {
+                        check(rest, item, path, opts, out, depth + 1);
+                    } else if let Some(uneval) = unevaluated {
+                        check(uneval, item, path, opts, out, depth + 1);
+                    }
+                    path.pop();
+                }
+            }
+        }
         ValidationNode::CheckArray(items, min_items, max_items) => {
             if let Value::Array(arr) = value {
                 if arr.len() < *min_items {
@@ -353,7 +510,7 @@ pub(crate) fn check(
                         return;
                     }
                     path.push_index(i);
-                    check(items, item, path, opts, out);
+                    check(items, item, path, opts, out, depth + 1);
                     path.pop();
                 }
             }
@@ -374,24 +531,45 @@ pub(crate) fn check(
                 }
             }
         }
-        ValidationNode::CheckContains(contains) => {
+        ValidationNode::CheckContains(contains, min_contains, max_contains) => {
             if let Value::Array(arr) = value {
-                let matched = arr.iter().any(|item| {
-                    let mut trial = ErrorCollector::new(true, 1);
-                    check(contains, item, path, opts, &mut trial);
-                    trial.is_valid()
-                });
-                if !matched {
+                let matched = arr
+                    .iter()
+                    .filter(|item| {
+                        let mut trial = ErrorCollector::new(true, 1);
+                        check(contains, item, path, opts, &mut trial, depth + 1);
+                        trial.is_valid()
+                    })
+                    .count();
+                if matched < *min_contains {
                     out.push(
                         ValidationError::new(
                             path.as_str(),
-                            "Expected at least one array item to match the `contains` schema"
-                                .to_string(),
-                            "contains",
-                            json_type_name(value),
+                            format!(
+                                "Expected at least {min_contains} array item(s) to match the \
+                                 `contains` schema, got {matched}"
+                            ),
+                            format!("minContains {min_contains}"),
+                            matched.to_string(),
                         )
                         .with_value(value.clone()),
                     );
+                }
+                if let Some(max) = max_contains {
+                    if matched > *max {
+                        out.push(
+                            ValidationError::new(
+                                path.as_str(),
+                                format!(
+                                    "Expected at most {max} array item(s) to match the \
+                                     `contains` schema, got {matched}"
+                                ),
+                                format!("maxContains {max}"),
+                                matched.to_string(),
+                            )
+                            .with_value(value.clone()),
+                        );
+                    }
                 }
             }
         }
@@ -403,25 +581,83 @@ pub(crate) fn check(
                     }
                     if let Some(v) = map.get(name) {
                         path.push_field(name);
-                        check(sub, v, path, opts, out);
+                        check(sub, v, path, opts, out, depth + 1);
                         path.pop();
                     }
                 }
             }
         }
-        ValidationNode::CheckObjectEx(shape) => check_object_ex(shape, value, path, opts, out),
+        ValidationNode::CheckObjectEx(shape) => {
+            check_object_ex(shape, value, path, opts, out, depth)
+        }
+        ValidationNode::CheckDependentRequired(deps) => {
+            if let Value::Object(map) = value {
+                for (key, requires) in deps {
+                    if out.stopped() {
+                        return;
+                    }
+                    if !map.contains_key(key) {
+                        continue;
+                    }
+                    for dependent in requires {
+                        if map.contains_key(dependent) {
+                            continue;
+                        }
+                        path.push_field(dependent);
+                        out.push(ValidationError::new(
+                            path.as_str(),
+                            format!(
+                                "Property \"{key}\" requires the dependent property \
+                                 \"{dependent}\""
+                            ),
+                            "dependentRequired",
+                            "missing",
+                        ));
+                        path.pop();
+                        if out.stopped() {
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+        ValidationNode::CheckDependentSchemas(deps) => {
+            if let Value::Object(map) = value {
+                for (key, sub) in deps {
+                    if out.stopped() {
+                        return;
+                    }
+                    if map.contains_key(key) {
+                        check(sub, value, path, opts, out, depth);
+                    }
+                }
+            }
+        }
+        ValidationNode::CheckPropertyNames(sub) => {
+            if let Value::Object(map) = value {
+                for key in map.keys() {
+                    if out.stopped() {
+                        return;
+                    }
+                    let key_value = Value::String(key.clone());
+                    path.push_field(key);
+                    check(sub, &key_value, path, opts, out, depth + 1);
+                    path.pop();
+                }
+            }
+        }
         ValidationNode::CheckIfThenElse(if_node, then_node, else_node) => {
             let cond_matched = {
                 let mut trial = ErrorCollector::fail_fast();
-                check(if_node, value, path, opts, &mut trial);
+                check(if_node, value, path, opts, &mut trial, depth);
                 trial.is_valid()
             };
             if cond_matched {
                 if let Some(t) = then_node {
-                    check(t, value, path, opts, out);
+                    check(t, value, path, opts, out, depth);
                 }
             } else if let Some(e) = else_node {
-                check(e, value, path, opts, out);
+                check(e, value, path, opts, out, depth);
             }
         }
         ValidationNode::CheckAllOf(schemas) => {
@@ -429,13 +665,13 @@ pub(crate) fn check(
                 if out.stopped() {
                     return;
                 }
-                check(sub, value, path, opts, out);
+                check(sub, value, path, opts, out, depth);
             }
         }
         ValidationNode::CheckAnyOf(schemas) => {
             let any = schemas.iter().any(|sub| {
                 let mut trial = ErrorCollector::fail_fast();
-                check(sub, value, path, opts, &mut trial);
+                check(sub, value, path, opts, &mut trial, depth);
                 trial.is_valid()
             });
             if !any {
@@ -458,7 +694,7 @@ pub(crate) fn check(
                 .iter()
                 .filter(|sub| {
                     let mut trial = ErrorCollector::fail_fast();
-                    check(sub, value, path, opts, &mut trial);
+                    check(sub, value, path, opts, &mut trial, depth);
                     trial.is_valid()
                 })
                 .count();
@@ -481,7 +717,7 @@ pub(crate) fn check(
         }
         ValidationNode::CheckNot(inner) => {
             let mut trial = ErrorCollector::fail_fast();
-            check(inner, value, path, opts, &mut trial);
+            check(inner, value, path, opts, &mut trial, depth);
             if trial.is_valid() {
                 out.push(
                     ValidationError::new(
@@ -503,6 +739,7 @@ fn check_object_ex(
     path: &mut PathCursor,
     opts: &ValidationOptions,
     out: &mut ErrorCollector,
+    depth: usize,
 ) {
     let Value::Object(map) = value else { return };
 
@@ -528,7 +765,7 @@ fn check_object_ex(
         }
         if let Some(v) = map.get(name) {
             path.push_field(name);
-            check(sub, v, path, opts, out);
+            check(sub, v, path, opts, out, depth + 1);
             path.pop();
         }
     }
@@ -540,7 +777,7 @@ fn check_object_ex(
         for (key, v) in map {
             if pattern.is_match(key) {
                 path.push_field(key);
-                check(sub, v, path, opts, out);
+                check(sub, v, path, opts, out, depth + 1);
                 path.pop();
                 if out.stopped() {
                     return;
@@ -550,38 +787,77 @@ fn check_object_ex(
     }
 
     if !matches!(shape.additional, AdditionalProperties::Allow) {
-        for (key, v) in map {
-            if out.stopped() {
-                return;
+        apply_key_rule(
+            &shape.additional,
+            shape,
+            map,
+            path,
+            opts,
+            out,
+            depth,
+            "additionalProperties",
+        );
+    }
+
+    if let Some(unevaluated) = &shape.unevaluated {
+        if !matches!(unevaluated, AdditionalProperties::Allow) {
+            apply_key_rule(
+                unevaluated,
+                shape,
+                map,
+                path,
+                opts,
+                out,
+                depth,
+                "unevaluatedProperties",
+            );
+        }
+    }
+}
+
+/// Apply an `additionalProperties`-style rule to the keys not covered by
+/// `properties` / `patternProperties`. `keyword` names the rule in errors.
+fn apply_key_rule(
+    rule: &AdditionalProperties,
+    shape: &ObjectShape,
+    map: &serde_json::Map<String, Value>,
+    path: &mut PathCursor,
+    opts: &ValidationOptions,
+    out: &mut ErrorCollector,
+    depth: usize,
+    keyword: &str,
+) {
+    for (key, v) in map {
+        if out.stopped() {
+            return;
+        }
+        let covered = shape.properties.iter().any(|(n, _)| n == key)
+            || shape
+                .pattern_properties
+                .iter()
+                .any(|(p, _)| p.is_match(key));
+        if covered {
+            continue;
+        }
+        match rule {
+            AdditionalProperties::Allow => unreachable!("caller checked for Allow"),
+            AdditionalProperties::Forbid => {
+                path.push_field(key);
+                out.push(
+                    ValidationError::new(
+                        path.as_str(),
+                        format!("Unknown property \"{key}\" is not allowed ({keyword})"),
+                        keyword,
+                        "unknown property",
+                    )
+                    .with_value(v.clone()),
+                );
+                path.pop();
             }
-            let covered = shape.properties.iter().any(|(n, _)| n == key)
-                || shape
-                    .pattern_properties
-                    .iter()
-                    .any(|(p, _)| p.is_match(key));
-            if covered {
-                continue;
-            }
-            match &shape.additional {
-                AdditionalProperties::Allow => unreachable!(),
-                AdditionalProperties::Forbid => {
-                    path.push_field(key);
-                    out.push(
-                        ValidationError::new(
-                            path.as_str(),
-                            format!("Unknown property \"{key}\" is not allowed"),
-                            "additionalProperties",
-                            "unknown property",
-                        )
-                        .with_value(v.clone()),
-                    );
-                    path.pop();
-                }
-                AdditionalProperties::Schema(sub) => {
-                    path.push_field(key);
-                    check(sub, v, path, opts, out);
-                    path.pop();
-                }
+            AdditionalProperties::Schema(sub) => {
+                path.push_field(key);
+                check(sub, v, path, opts, out, depth + 1);
+                path.pop();
             }
         }
     }
@@ -831,6 +1107,7 @@ mod tests {
                 ValidationNode::CheckType(DataType::String),
             )],
             additional: AdditionalProperties::Forbid,
+            unevaluated: None,
             required: vec!["name".into()],
         };
         let node = ValidationNode::CheckObjectEx(shape);
@@ -916,11 +1193,140 @@ mod tests {
 
     #[test]
     fn contains_keyword() {
-        let node = ValidationNode::CheckContains(Box::new(ValidationNode::CheckMinimum(5.0)));
+        let node = ValidationNode::CheckContains(Box::new(ValidationNode::CheckMinimum(5.0)), 1, None);
         assert!(node_errs(&node, json!([1, 6])).is_empty());
         assert_eq!(node_errs(&node, json!([1, 2])).len(), 1);
         // applies to arrays only
         assert!(node_errs(&node, json!(7)).is_empty());
+    }
+
+    #[test]
+    fn contains_min_max() {
+        let node = ValidationNode::CheckContains(
+            Box::new(ValidationNode::CheckType(DataType::Integer)),
+            2,
+            Some(3),
+        );
+        assert!(node_errs(&node, json!([1, 2, "x"])).is_empty());
+        assert!(node_errs(&node, json!([1, 2, 3])).is_empty());
+        assert_eq!(node_errs(&node, json!([1])).len(), 1, "below minContains");
+        assert_eq!(node_errs(&node, json!([])).len(), 1);
+        assert_eq!(
+            node_errs(&node, json!([1, 2, 3, 4])).len(),
+            1,
+            "above maxContains"
+        );
+        let errs = node_errs(&node, json!(["a", "b", 1]));
+        assert_eq!(errs[0].message, "Expected at least 2 array item(s) to match the `contains` schema, got 1");
+    }
+
+    #[test]
+    fn prefix_items_tuple() {
+        let node = ValidationNode::CheckPrefixItems(
+            vec![
+                ValidationNode::CheckType(DataType::String),
+                ValidationNode::CheckType(DataType::Integer),
+            ],
+            None,
+            None,
+        );
+        assert!(node_errs(&node, json!(["a", 1])).is_empty());
+        assert!(node_errs(&node, json!(["a"])).is_empty(), "short tuples pass");
+        assert!(node_errs(&node, json!([])).is_empty());
+        assert_eq!(node_errs(&node, json!([1, 2])).len(), 1, "wrong type at [0]");
+        let errs = node_errs(&node, json!(["a", 2, "extra"]));
+        assert_eq!(errs.len(), 0, "extra items unconstrained without items");
+
+        // With `items` for the remainder:
+        let node = ValidationNode::CheckPrefixItems(
+            vec![ValidationNode::CheckType(DataType::String)],
+            Some(Box::new(ValidationNode::CheckType(DataType::Integer))),
+            None,
+        );
+        assert!(node_errs(&node, json!(["a", 1, 2])).is_empty());
+        assert_eq!(node_errs(&node, json!(["a", 1, "x"])).len(), 1);
+    }
+
+    #[test]
+    fn dependent_required_and_schemas() {
+        let node = ValidationNode::CheckDependentRequired(vec![(
+            "credit_card".into(),
+            vec!["billing_address".into()],
+        )]);
+        assert!(node_errs(&node, json!({"credit_card": "x", "billing_address": "y"})).is_empty());
+        assert!(node_errs(&node, json!({"name": "x"})).is_empty());
+        let errs = node_errs(&node, json!({"credit_card": "x"}));
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].path, "$.billing_address");
+        assert!(errs[0].message.contains("credit_card"));
+
+        let schemas = ValidationNode::CheckDependentSchemas(vec![(
+            "a".into(),
+            Box::new(ValidationNode::CheckRequired(vec!["b".into()])),
+        )]);
+        assert!(node_errs(&schemas, json!({"a": 1, "b": 2})).is_empty());
+        assert!(node_errs(&schemas, json!({"c": 1})).is_empty());
+        assert_eq!(node_errs(&schemas, json!({"a": 1})).len(), 1);
+    }
+
+    #[test]
+    fn property_names() {
+        let node = ValidationNode::CheckPropertyNames(Box::new(ValidationNode::all(vec![
+            ValidationNode::CheckType(DataType::String),
+            ValidationNode::CheckMaxLength(3),
+        ])));
+        assert!(node_errs(&node, json!({"abc": 1, "xy": 2})).is_empty());
+        let errs = node_errs(&node, json!({"toolong": 1, "ok": 2}));
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].path, "$.toolong");
+        // non-objects pass
+        assert!(node_errs(&node, json!([1, 2])).is_empty());
+    }
+
+    #[test]
+    fn custom_format_registration() {
+        let node = ValidationNode::CheckCustomFormat("even-length".into());
+        let opts = ValidationOptions::default().with_format("even-length", |s| s.len() % 2 == 0);
+        assert!(validate(&node, &json!("abcd"), &opts).is_empty());
+        assert_eq!(validate(&node, &json!("abc"), &opts).len(), 1);
+
+        // Unregistered custom formats are ignored (annotation semantics).
+        let no_opts = ValidationOptions::default();
+        assert!(validate(&node, &json!("abc"), &no_opts).is_empty());
+    }
+
+    #[test]
+    fn unevaluated_properties_shape() {
+        use crate::node::AdditionalProperties;
+        let shape = ObjectShape {
+            properties: vec![(
+                "name".into(),
+                ValidationNode::CheckType(DataType::String),
+            )],
+            unevaluated: Some(AdditionalProperties::Forbid),
+            ..Default::default()
+        };
+        let node = ValidationNode::CheckObjectEx(shape);
+        assert!(node_errs(&node, json!({"name": "a"})).is_empty());
+        let errs = node_errs(&node, json!({"name": "a", "extra": 1}));
+        assert_eq!(errs.len(), 1);
+        assert!(errs[0].message.contains("unevaluatedProperties"));
+    }
+
+    #[test]
+    fn unevaluated_items_in_prefix() {
+        let node = ValidationNode::CheckPrefixItems(
+            vec![ValidationNode::CheckType(DataType::Integer)],
+            None,
+            Some(Box::new(ValidationNode::CheckType(DataType::String))),
+        );
+        assert!(node_errs(&node, json!([1])).is_empty());
+        assert!(node_errs(&node, json!([1, "a", "b"])).is_empty());
+        assert_eq!(
+            node_errs(&node, json!([1, "a", 2])).len(),
+            1,
+            "items beyond prefix must be strings"
+        );
     }
 
     #[test]
@@ -955,5 +1361,87 @@ mod tests {
             &json!("1"),
             &ValidationOptions::default()
         ));
+    }
+
+    #[test]
+    fn max_depth_guard_reports_instead_of_overflowing() {
+        // Deep recursion is only safe on a large stack; the guard itself is
+        // what keeps production callers (default stacks) safe.
+        std::thread::Builder::new()
+            .stack_size(256 * 1024 * 1024)
+            .spawn(max_depth_guard_body)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    fn deep_value(depth: usize) -> Value {
+        // Build by moving (NOT via `json!`, which round-trips through
+        // `to_value` and would copy the whole remaining tree each step).
+        let mut value = Value::Number(1.into());
+        for _ in 0..depth {
+            let mut map = serde_json::Map::new();
+            map.insert("child".to_string(), value);
+            value = Value::Object(map);
+        }
+        value
+    }
+
+    fn max_depth_guard_body() {
+        // A self-similar schema and instance nested beyond the default limit
+        // must produce a bounded maxDepth error, not a stack overflow.
+        let depth = 200usize;
+        let mut node = ValidationNode::Always;
+        for _ in 0..depth {
+            node = ValidationNode::CheckField("child".into(), Box::new(node));
+        }
+        let value = deep_value(depth);
+        let errs = validate(&node, &value, &ValidationOptions::default());
+        assert_eq!(errs.len(), 1, "exactly one maxDepth error");
+        assert!(errs[0].message.contains("depth"));
+        // The path stays bounded by the guard, not by the document.
+        assert!(
+            errs[0].path.chars().count() < 10 * DEFAULT_MAX_DEPTH,
+            "error path is bounded: {}",
+            errs[0].path.len()
+        );
+        assert!(!validate_value(
+            &node,
+            &value,
+            &ValidationOptions::default()
+        ));
+
+        // Raising the limit lets the same document validate.
+        let opts = ValidationOptions {
+            max_depth: depth + 10,
+            ..Default::default()
+        };
+        assert!(validate(&node, &value, &opts).is_empty());
+    }
+
+    /// Regression: a 100k-deep document must hit the depth guard cleanly
+    /// (used by every binding; parse-level limits in serde_json/jiter reject
+    /// such input even earlier). Runs on a large stack so building and
+    /// dropping the pathological value itself cannot overflow the test.
+    #[test]
+    fn deep_document_100k_hits_guard_cleanly() {
+        std::thread::Builder::new()
+            .stack_size(256 * 1024 * 1024)
+            .spawn(deep_document_100k_body)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    fn deep_document_100k_body() {
+        const DEPTH: usize = 100_000;
+        let mut node = ValidationNode::Always;
+        for _ in 0..DEPTH {
+            node = ValidationNode::CheckField("child".into(), Box::new(node));
+        }
+        let value = deep_value(DEPTH);
+        let errs = validate(&node, &value, &ValidationOptions::default());
+        assert_eq!(errs.len(), 1, "guard fires exactly once");
+        assert!(errs[0].message.contains("depth"));
     }
 }

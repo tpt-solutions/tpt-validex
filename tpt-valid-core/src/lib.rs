@@ -37,7 +37,7 @@ pub use csv::{
     infer_column_types, validate_csv_bytes, validate_csv_stream, ColumnType, CsvDialect,
     CsvParseError, CsvReader, CsvRecord, CsvStats, RowErrors, RowOutcome,
 };
-pub use engine::{validate, validate_value, ValidationOptions};
+pub use engine::{validate, validate_value, CustomFormats, FormatFn, ValidationOptions};
 pub use error::{ErrorCollector, ValidationError, ValidationReport};
 pub use format::Format;
 pub use jsonl::{validate_jsonl_stream, JsonlRowOutcome, JsonlStats};

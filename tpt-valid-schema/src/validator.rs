@@ -12,7 +12,7 @@ use tpt_valid_core::{
     ValidationOutcome, ValidationReport,
 };
 
-use crate::ast::parse_schema;
+use crate::ast::{parse_schema, parse_schema_with};
 use crate::error::SchemaError;
 use crate::Warning;
 
@@ -50,6 +50,16 @@ impl Validator {
         Self::from_value(&value)
     }
 
+    /// Compile a JSON Schema, resolving cross-document `$ref`s through
+    /// `registry`.
+    pub fn new_with(
+        schema: &str,
+        registry: &crate::ast::SchemaRegistry,
+    ) -> Result<Validator, SchemaError> {
+        let value = crate::json::from_str(schema)?;
+        Self::from_value_with(&value, registry)
+    }
+
     /// Compile a schema, reusing the process-wide cache when the same schema
     /// text was compiled before.
     pub fn cached(schema: &str) -> Result<Arc<Validator>, SchemaError> {
@@ -59,6 +69,20 @@ impl Validator {
     /// Compile a schema from an already-parsed JSON value.
     pub fn from_value(schema: &Value) -> Result<Validator, SchemaError> {
         let ast = parse_schema(schema)?;
+        let (node, warnings) = crate::compiler::compile(&ast)?;
+        Ok(Validator {
+            root: Arc::new(node),
+            warnings: Arc::new(warnings),
+        })
+    }
+
+    /// Compile a schema from an already-parsed JSON value, resolving
+    /// cross-document `$ref`s through `registry`.
+    pub fn from_value_with(
+        schema: &Value,
+        registry: &crate::ast::SchemaRegistry,
+    ) -> Result<Validator, SchemaError> {
+        let ast = parse_schema_with(schema, registry)?;
         let (node, warnings) = crate::compiler::compile(&ast)?;
         Ok(Validator {
             root: Arc::new(node),

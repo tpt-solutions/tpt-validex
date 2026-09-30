@@ -48,7 +48,7 @@ pub fn validate_batch(
         .map(|(index, value)| {
             let mut collector = ErrorCollector::new(opts.fail_fast, opts.max_errors);
             let mut path = PathCursor::new();
-            check(node, value, &mut path, opts, &mut collector);
+            check(node, value, &mut path, opts, &mut collector, 0);
             let errors = collector.into_errors();
             let valid = errors.is_empty();
             ValidationOutcome {

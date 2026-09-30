@@ -29,7 +29,7 @@ pub mod json;
 pub mod tokenizer;
 pub mod validator;
 
-pub use ast::{ObjectAst, SchemaAst};
+pub use ast::{ObjectAst, SchemaAst, SchemaRegistry};
 pub use cache::SchemaCache;
 pub use compiler::compile;
 pub use error::SchemaError;

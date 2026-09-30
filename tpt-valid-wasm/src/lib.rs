@@ -22,12 +22,22 @@
 #![warn(missing_docs)]
 
 use serde_json::Value;
+use std::cell::RefCell;
+use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 
+use tpt_valid_core::ValidationOptions;
 use tpt_valid_schema::Validator as RustValidator;
 
 fn to_js_error<E: std::fmt::Display>(e: E) -> JsValue {
     JsValue::from_str(&e.to_string())
+}
+
+// Registry of JS custom-format callables. Wasm runs single-threaded, so a
+// thread-local table plus an index captured by the (Send+Sync-safe) format
+// closure keeps the engine's `FormatFn` bounds without unsafe code.
+thread_local! {
+    static FORMAT_FNS: RefCell<Vec<js_sys::Function>> = const { RefCell::new(Vec::new()) };
 }
 
 // ---------------------------------------------------------------------------
@@ -152,6 +162,34 @@ fn errors_to_js(errors: &[tpt_valid_core::ValidationError]) -> js_sys::Array {
 #[wasm_bindgen]
 pub struct Validator {
     inner: RustValidator,
+    /// `(format name, index into FORMAT_FNS)` for registered callables.
+    format_ids: Vec<(String, usize)>,
+}
+
+impl Validator {
+    /// Build validation options carrying the registered format callables.
+    fn build_opts(&self) -> ValidationOptions {
+        let mut opts = ValidationOptions::default();
+        for (name, id) in &self.format_ids {
+            let id = *id;
+            let f: tpt_valid_core::FormatFn = Arc::new(move |s: &str| {
+                FORMAT_FNS.with(|slot| {
+                    let slot = slot.borrow();
+                    match slot.get(id) {
+                        Some(f) => {
+                            let arg = JsValue::from_str(s);
+                            f.call1(&JsValue::NULL, &arg)
+                                .map(|r| r.is_truthy())
+                                .unwrap_or(false)
+                        }
+                        None => false,
+                    }
+                })
+            });
+            opts.custom_formats.insert(name.clone(), f);
+        }
+        opts
+    }
 }
 
 #[wasm_bindgen]
@@ -161,20 +199,45 @@ impl Validator {
     pub fn new(schema: JsValue) -> Result<Validator, JsValue> {
         let schema_value = js_to_value(schema)?;
         let inner = RustValidator::from_value(&schema_value).map_err(to_js_error)?;
-        Ok(Validator { inner })
+        Ok(Validator {
+            inner,
+            format_ids: Vec::new(),
+        })
     }
 
     /// Compile from a schema JSON string.
     #[wasm_bindgen(js_name = fromJson)]
     pub fn from_json(schema: &str) -> Result<Validator, JsValue> {
         let inner = RustValidator::new(schema).map_err(to_js_error)?;
-        Ok(Validator { inner })
+        Ok(Validator {
+            inner,
+            format_ids: Vec::new(),
+        })
+    }
+
+    /// Register a custom format assertion for a non-built-in `format` name.
+    /// The function receives the string under test and its truthiness
+    /// decides validity. Pass `undefined` to unregister. Unregistered
+    /// custom formats are ignored, matching JSON Schema annotation
+    /// semantics.
+    #[wasm_bindgen(js_name = registerFormat)]
+    pub fn register_format(&mut self, name: &str, f: Option<js_sys::Function>) {
+        self.format_ids.retain(|(n, _)| n != name);
+        if let Some(f) = f {
+            let id = FORMAT_FNS.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                slot.push(f);
+                slot.len() - 1
+            });
+            self.format_ids.push((name.to_string(), id));
+        }
     }
 
     /// Validate a single value. Returns `{ isValid, errors }` (spec §6.2).
     pub fn validate(&self, data: JsValue) -> Result<JsValue, JsValue> {
         let value = js_to_value(data)?;
-        let report = self.inner.validate(&value);
+        let opts = self.build_opts();
+        let report = self.inner.validate_with(&value, &opts);
         let result = js_sys::Object::new();
         let _ = js_sys::Reflect::set(
             &result,
@@ -189,7 +252,8 @@ impl Validator {
     #[wasm_bindgen(js_name = isValid)]
     pub fn is_valid(&self, data: JsValue) -> Result<bool, JsValue> {
         let value = js_to_value(data)?;
-        Ok(self.inner.is_valid(&value))
+        let opts = self.build_opts();
+        Ok(tpt_valid_core::validate_value(self.inner.root(), &value, &opts))
     }
 
     /// Validate an array of values (parallel batch mode). Returns an array
@@ -200,7 +264,8 @@ impl Validator {
         let Value::Array(values) = values else {
             return Err(JsValue::from_str("validateBatch expects an array"));
         };
-        let outcomes = self.inner.validate_batch(&values);
+        let opts = self.build_opts();
+        let outcomes = tpt_valid_core::validate_batch(self.inner.root(), &values, &opts);
         let results = js_sys::Array::new_with_length(outcomes.len() as u32);
         for (i, outcome) in outcomes.iter().enumerate() {
             let object = js_sys::Object::new();

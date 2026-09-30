@@ -6,15 +6,29 @@ use serde_json::{Map, Number, Value};
 
 use crate::tokenizer::{tokenize, Token, TokenError, TokenKind};
 
+/// Default maximum nesting depth accepted by the schema reader. Deeply
+/// nested schema documents are rejected with a positioned error instead of
+/// risking a stack overflow in the recursive-descent parser (and, later, in
+/// schema compilation and validation).
+pub const DEFAULT_MAX_DEPTH: usize = 128;
+
 /// Parse a schema document (JSON text) into a [`Value`].
 ///
 /// Duplicate object keys keep the last occurrence (matching common JSON
 /// implementations). Trailing content after the top-level value is rejected.
+/// Nesting deeper than [`DEFAULT_MAX_DEPTH`] is rejected.
 pub fn from_str(input: &str) -> Result<Value, TokenError> {
+    from_str_with_limit(input, DEFAULT_MAX_DEPTH)
+}
+
+/// Parse a schema document with an explicit maximum nesting depth.
+pub fn from_str_with_limit(input: &str, max_depth: usize) -> Result<Value, TokenError> {
     let tokens = tokenize(input)?;
     let mut parser = Parser {
         tokens: &tokens,
         pos: 0,
+        max_depth,
+        depth: 0,
     };
     let value = parser.parse_value()?;
     if parser.pos < tokens.len() {
@@ -31,6 +45,8 @@ pub fn from_str(input: &str) -> Result<Value, TokenError> {
 struct Parser<'a> {
     tokens: &'a [Token],
     pos: usize,
+    max_depth: usize,
+    depth: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -64,8 +80,18 @@ impl<'a> Parser<'a> {
     fn parse_value(&mut self) -> Result<Value, TokenError> {
         let t = self.next()?;
         match &t.kind {
-            TokenKind::LeftBrace => self.parse_object(),
-            TokenKind::LeftBracket => self.parse_array(),
+            TokenKind::LeftBrace => {
+                self.enter(t)?;
+                let v = self.parse_object();
+                self.depth -= 1;
+                v
+            }
+            TokenKind::LeftBracket => {
+                self.enter(t)?;
+                let v = self.parse_array();
+                self.depth -= 1;
+                v
+            }
             TokenKind::String(s) => Ok(Value::String(s.clone())),
             TokenKind::Number(raw) => {
                 // Prefer integer-backed numbers so schema keywords like
@@ -96,6 +122,22 @@ impl<'a> Parser<'a> {
                 column: t.column,
             }),
         }
+    }
+
+    /// Enter a nested container, enforcing the depth limit.
+    fn enter(&mut self, open: &Token) -> Result<(), TokenError> {
+        self.depth += 1;
+        if self.depth > self.max_depth {
+            return Err(TokenError {
+                message: format!(
+                    "nesting depth exceeds the maximum of {} levels",
+                    self.max_depth
+                ),
+                line: open.line,
+                column: open.column,
+            });
+        }
+        Ok(())
     }
 
     fn parse_object(&mut self) -> Result<Value, TokenError> {
@@ -242,5 +284,31 @@ mod tests {
             from_str("[01]").unwrap_err().message.contains("expected"),
             "leading zero tokenizes as two numbers; the reader rejects the result"
         );
+    }
+
+    #[test]
+    fn depth_limit_rejects_deep_documents() {
+        let ok = format!("{}{}", "[".repeat(64), "]".repeat(64));
+        assert!(from_str(&ok).is_ok(), "128 levels (root + 127) pass");
+
+        let deep = format!("{}1{}", "[".repeat(129), "]".repeat(129));
+        let e = from_str(&deep).unwrap_err();
+        assert!(e.message.contains("depth"), "got: {e}");
+        assert_eq!(e.line, 1);
+
+        // A custom limit is honored.
+        assert!(from_str_with_limit(&ok, 10).is_err());
+        assert!(from_str_with_limit("[[[1]]]", 3).is_ok());
+    }
+
+    /// Regression: a 100k-deep schema document must be rejected with a
+    /// depth error instead of overflowing the parser's stack. The tokenizer
+    /// is iterative, so tokenizing stays flat; the recursive parser bails
+    /// at the limit before building any deep structure.
+    #[test]
+    fn deep_schema_100k_is_rejected_not_overflow() {
+        let deep = format!("{}1{}", "[".repeat(100_000), "]".repeat(100_000));
+        let e = from_str(&deep).unwrap_err();
+        assert!(e.message.contains("depth"), "got: {e}");
     }
 }

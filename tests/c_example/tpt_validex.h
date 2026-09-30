@@ -34,6 +34,13 @@ typedef struct tpt_valid_handle tpt_valid_handle;
 typedef struct tpt_valid_result tpt_valid_result;
 
 /**
+ * Custom format assertion callback. Return non-zero when `value` is valid.
+ * Must be thread-safe: it may be invoked concurrently from batch and
+ * streaming validation runs.
+ */
+typedef int (*tpt_valid_format_cb)(void* user_data, const char* value);
+
+/**
  * Compile a JSON Schema (Draft 2020-12 subset).
  *
  * @param schema  NUL-terminated UTF-8 JSON Schema text; must not be NULL.
@@ -41,6 +48,22 @@ typedef struct tpt_valid_result tpt_valid_result;
  *         tpt_valid_last_error). Free with tpt_valid_destroy.
  */
 tpt_valid_handle* tpt_valid_create(const char* schema);
+
+/**
+ * Register a custom format assertion on a validator.
+ *
+ * From then on, strings in fields whose schema carries `"format": name`
+ * (and which is not a built-in format) are validated by calling
+ * `callback(user_data, value)`; a non-zero return accepts the value.
+ * Pass NULL as `callback` to unregister `name`. Unregistered custom
+ * formats are ignored (annotation semantics).
+ *
+ * @return 0 on success, 1 on invalid arguments.
+ */
+int tpt_valid_register_format(tpt_valid_handle* handle,
+                              const char* name,
+                              tpt_valid_format_cb callback,
+                              void* user_data);
 
 /**
  * Validate a JSON document.
