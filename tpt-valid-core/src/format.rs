@@ -692,6 +692,7 @@ fn digits_at(b: &[u8], start: usize, count: usize) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
 
     #[test]
     fn format_keyword_roundtrip() {
@@ -712,7 +713,6 @@ mod tests {
         }
         assert_eq!(Format::from_keyword("nope"), None);
     }
-    use super::*;
 
     #[test]
     fn email_valid_cases() {

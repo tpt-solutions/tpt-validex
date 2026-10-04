@@ -21,6 +21,8 @@ jobs:
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - name: Run tests
         run: cargo test --workspace
@@ -93,14 +95,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Create virtualenv
+        run: python -m venv .venv
       - name: Install maturin + pytest
-        run: pip install maturin pytest
+        run: |
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install maturin pytest
       - name: Build extension
         working-directory: tpt-valid-py
-        run: maturin develop --release
+        run: ../.venv/bin/maturin develop --release
       - name: pytest
         working-directory: tpt-valid-py
-        run: pytest tests/ -q
+        run: ../.venv/bin/python -m pytest tests/ -q
 
   go:
     name: Go bindings & tests
@@ -117,8 +123,8 @@ jobs:
       - name: Go test
         working-directory: tpt-valid-go
         env:
-          CGO_CFLAGS: -I.
-          CGO_LDFLAGS: -L${{ github.workspace }}/target/release
+          CGO_CFLAGS: "-I${{ github.workspace }}/tpt-valid-ffi"
+          CGO_LDFLAGS: "-L${{ github.workspace }}/target/release"
         run: |
           export LD_LIBRARY_PATH=${{ github.workspace }}/target/release:$LD_LIBRARY_PATH
           go test ./...
@@ -132,7 +138,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run benches (short)
-        run: cargo bench -- --warm-up-time 1 --measurement-time 2
+        run: cargo bench -p tpt-validex-benches -- --warm-up-time 1 --measurement-time 2
       - name: Store results
         uses: actions/upload-artifact@v4
         with:

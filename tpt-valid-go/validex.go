@@ -39,7 +39,7 @@ package validex
 //
 // // Bridge to the //export trampoline below; needed so Go code can take
 // // its address as a tpt_valid_format_cb.
-// int validex_format_trampoline(void* userData, const char* value);
+// int validex_format_trampoline(void* userData, char* value);
 import "C"
 
 import (
