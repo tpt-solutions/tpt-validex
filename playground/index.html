@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>tpt-validex playground</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: ui-sans-serif, system-ui, sans-serif; margin: 0; }
+    header { padding: .8rem 1.2rem; border-bottom: 1px solid #8884; display: flex; gap: 1rem; align-items: center; }
+    header h1 { font-size: 1.05rem; margin: 0; }
+    main { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem; padding: .6rem; height: calc(100vh - 3.4rem); box-sizing: border-box; }
+    section { display: flex; flex-direction: column; min-height: 0; }
+    h2 { font-size: .85rem; margin: 0 0 .3rem; color: #888; font-weight: 500; }
+    textarea { flex: 1; resize: none; font: 13px/1.45 ui-monospace, monospace; padding: .6rem; border-radius: 6px; border: 1px solid #8886; background: transparent; color: inherit; }
+    #status { padding: .5rem .2rem 0; font-size: .9rem; min-height: 1.4rem; }
+    .valid { color: #0a7d28; }
+    .invalid { color: #b00020; }
+    #errors { margin: .3rem 0 0; padding: 0 0 0 1.1rem; font-size: .82rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>tpt-validex playground</h1>
+    <span style="color:#888;font-size:.8rem">Draft 2020-12 subset — everything runs locally in your browser, nothing is uploaded</span>
+  </header>
+  <main>
+    <section>
+      <h2>schema</h2>
+      <textarea id="schema" spellcheck="false">{
+  "type": "object",
+  "properties": {
+    "name": { "type": "string", "minLength": 1 },
+    "age": { "type": "integer", "minimum": 0 },
+    "email": { "type": "string", "format": "email" }
+  },
+  "required": ["name", "age"]
+}</textarea>
+      <h2>data</h2>
+      <textarea id="data" spellcheck="false">{ "name": "Ada", "age": 30, "email": "ada@example.com" }</textarea>
+      <div id="status"></div>
+      <ol id="errors"></ol>
+    </section>
+    <section>
+      <h2>errors (structured, spec §5.5)</h2>
+      <textarea id="report" spellcheck="false" readonly></textarea>
+    </section>
+  </main>
+
+  <script type="module">
+    import init, { Validator } from "./tpt_valid_wasm.js";
+
+    const $ = (id) => document.getElementById(id);
+    let validator = null;
+
+    function compile() {
+      try {
+        validator = new Validator(JSON.parse($("schema").value));
+        $("status").textContent = "schema compiled";
+        $("status").className = "valid";
+      } catch (e) {
+        validator = null;
+        $("status").textContent = "schema error: " + e;
+        $("status").className = "invalid";
+      }
+      validate();
+    }
+
+    function validate() {
+      if (!validator) return;
+      let data;
+      try {
+        data = JSON.parse($("data").value);
+      } catch (e) {
+        $("status").textContent = "data is not valid JSON";
+        $("status").className = "invalid";
+        return;
+      }
+      const { isValid, errors } = validator.validate(data);
+      $("status").textContent = isValid ? "✓ valid" : `✗ ${errors.length} error(s)`;
+      $("status").className = isValid ? "valid" : "invalid";
+      $("report").value = JSON.stringify({ isValid, errors }, null, 2);
+    }
+
+    await init();
+    compile();
+    $("schema").addEventListener("input", compile);
+    $("data").addEventListener("input", validate);
+  </script>
+</body>
+</html>

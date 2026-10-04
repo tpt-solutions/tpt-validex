@@ -24,15 +24,19 @@
 #![warn(missing_docs)]
 
 pub mod batch;
+pub mod coerce;
 pub mod csv;
 pub mod engine;
 pub mod error;
 pub mod format;
 pub mod jsonl;
 pub mod node;
+pub mod profile;
+pub mod repair;
 pub mod types;
 
 pub use batch::{validate_batch, ValidationOutcome};
+pub use coerce::{coerce_value, CoerceChange, CoerceOptions};
 pub use csv::{
     infer_column_types, validate_csv_bytes, validate_csv_stream, ColumnType, CsvDialect,
     CsvParseError, CsvReader, CsvRecord, CsvStats, RowErrors, RowOutcome,
@@ -42,6 +46,8 @@ pub use error::{ErrorCollector, ValidationError, ValidationReport};
 pub use format::Format;
 pub use jsonl::{validate_jsonl_stream, JsonlRowOutcome, JsonlStats};
 pub use node::{AdditionalProperties, EnumSet, ObjectShape, ValidationNode};
+pub use profile::{profile_csv, ColumnProfile};
+pub use repair::{repair_prompt, ErrorCluster, ErrorClusterer};
 pub use types::{json_type_name, DataType};
 
 /// Parse a JSON document with the platform's fastest backend, flattening

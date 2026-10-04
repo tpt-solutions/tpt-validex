@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Contact (CRM import)",
+  "type": "object",
+  "properties": {
+    "first_name": {"type": "string", "minLength": 1, "maxLength": 100},
+    "last_name": {"type": "string", "minLength": 1, "maxLength": 100},
+    "email": {"type": "string", "format": "email"},
+    "phone": {"type": "string", "format": "phone"},
+    "company": {"type": "string"},
+    "tags": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "birthday": {"type": "string", "format": "date"}
+  },
+  "required": ["first_name", "last_name", "email"],
+  "additionalProperties": false
+}

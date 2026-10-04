@@ -9,7 +9,11 @@ Version numbers are shared across the whole
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+- `tpt_valid_register_format(handle, name, callback, user_data)` — C
+function-pointer custom format assertions (thread-safe callback contract).
+`NULL` unregisters a name.
+
 
 ## [0.1.0] - 2026-09-29
 

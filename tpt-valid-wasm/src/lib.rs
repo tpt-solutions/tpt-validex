@@ -253,7 +253,11 @@ impl Validator {
     pub fn is_valid(&self, data: JsValue) -> Result<bool, JsValue> {
         let value = js_to_value(data)?;
         let opts = self.build_opts();
-        Ok(tpt_valid_core::validate_value(self.inner.root(), &value, &opts))
+        Ok(tpt_valid_core::validate_value(
+            self.inner.root(),
+            &value,
+            &opts,
+        ))
     }
 
     /// Validate an array of values (parallel batch mode). Returns an array

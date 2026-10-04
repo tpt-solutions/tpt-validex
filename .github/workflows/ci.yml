@@ -18,10 +18,14 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run tests
         run: cargo test --workspace
+      - name: Official JSON-Schema-Test-Suite (pass rate in the log)
+        run: cargo test -p tpt-valid-schema --test jsonschema_suite -- --nocapture
       - name: Check WASM target compiles
         run: cargo check -p tpt-valid-wasm --target wasm32-unknown-unknown
 

@@ -1,5 +1,6 @@
 """Type stubs for the tpt-validex extension module."""
 
+from collections.abc import Callable
 from typing import Any
 
 __version__: str
@@ -41,7 +42,19 @@ class Validator:
         is_valid, errors = validator.validate({"age": 30})
     """
 
-    def __init__(self, schema: dict[str, Any] | bool | str) -> None: ...
+    def __init__(
+        self,
+        schema: dict[str, Any] | bool | str,
+        formats: dict[str, Callable[[str], bool]] | None = None,
+    ) -> None:
+        """Compile *schema*.
+
+        *formats* optionally maps non-built-in ``format`` names to callables;
+        each callable receives the string under test and returns whether it is
+        valid. Unregistered custom formats are ignored, matching JSON Schema
+        annotation semantics.
+        """
+        ...
 
     @staticmethod
     def from_json(schema: str) -> Validator: ...

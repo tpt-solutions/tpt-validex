@@ -11,7 +11,11 @@ published Python distribution is `tpt-validex` on
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+- `Validator(schema, formats={...})` — Python callables as custom format
+assertions.
+- `repair_prompt(schema, data, errors)` — LLM repair-prompt helper.
+
 
 ## [0.1.0] - 2026-09-29
 

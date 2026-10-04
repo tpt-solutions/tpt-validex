@@ -9,7 +9,31 @@ Version numbers are shared across the whole
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+- Schema-driven CSV coercion: declared property types win over sampled
+inference (`schema_column_types` / `resolve_column_types`); string columns
+keep leading zeros and `+` phone prefixes.
+- `CsvDialect::strict` — reject content after a closing quote and invalid
+UTF-8 (lenient default unchanged).
+- Engine depth guard: `ValidationOptions::max_depth` (default 128) with a
+bounded `maxDepth` error instead of unbounded recursion.
+- New keywords: `prefixItems` (+ tuple `items`), `contains` with
+`minContains`/`maxContains`, `dependentRequired`, `dependentSchemas`,
+`propertyNames`, `unevaluatedProperties`/`unevaluatedItems` (static
+accounting), `minProperties`/`maxProperties`, `CheckCustomFormat`.
+- Formats: `time`, `duration`, `phone`, `currency`, `iban` (mod-97),
+`country-code`, `semver`, `regex`, `json-pointer`.
+- Custom format registration: `CustomFormats` +
+`ValidationOptions::with_format`.
+- Friendlier errors: `ValidationError::suggestion` with "did you mean"
+hints (`error::did_you_mean`, Levenshtein).
+- `coerce` module: opt-in `coerce_value` / `CoerceOptions` with change
+reports.
+- `profile` module: `profile_csv` / `ColumnProfile` with tighter-schema
+suggestions.
+- `repair` module: `ErrorClusterer` / `ErrorCluster` streaming clustering
+and `repair_prompt` for LLM structured-output repair.
+
 
 ## [0.1.0] - 2026-09-29
 

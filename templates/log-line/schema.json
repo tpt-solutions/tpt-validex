@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Structured log line",
+  "type": "object",
+  "properties": {
+    "timestamp": {"type": "string", "format": "date-time"},
+    "level": {"enum": ["debug", "info", "warn", "error"]},
+    "service": {"type": "string", "minLength": 1},
+    "trace_id": {"type": "string", "format": "uuid"},
+    "message": {"type": "string", "minLength": 1},
+    "fields": {"type": "object"}
+  },
+  "required": ["timestamp", "level", "service", "message"]
+}

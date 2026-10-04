@@ -22,6 +22,52 @@ pub struct ValidationError {
     /// The offending value, when it is representable in JSON.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<Value>,
+    /// A "did you mean" hint for typo-level property-name mistakes, e.g.
+    /// `"name"` when `nme` was written (see [`did_you_mean`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suggestion: Option<String>,
+}
+
+/// Closest candidate to `input` among `candidates` within edit-distance
+/// tolerance (Levenshtein, case-insensitive): `None` when nothing is close.
+pub fn did_you_mean(input: &str, candidates: &[String]) -> Option<String> {
+    let input_lower = input.to_ascii_lowercase();
+    let mut best: Option<(usize, &String)> = None;
+    for candidate in candidates {
+        let distance = levenshtein(&input_lower, &candidate.to_ascii_lowercase());
+        // Tolerate ~1 edit per four characters, at least 1, at most 3.
+        let tolerance = (candidate.chars().count() / 4).clamp(1, 3);
+        if distance <= tolerance && best.map_or(true, |(d, _)| distance < d) {
+            best = Some((distance, candidate));
+        }
+    }
+    best.map(|(_, c)| c.clone())
+}
+
+/// Levenshtein edit distance (insert / delete / substitute), Unicode scalar
+/// units.
+pub fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    if a.is_empty() {
+        return b.len();
+    }
+    if b.is_empty() {
+        return a.len();
+    }
+    let mut previous: Vec<usize> = (0..=b.len()).collect();
+    let mut current = vec![0usize; b.len() + 1];
+    for (i, ca) in a.iter().enumerate() {
+        current[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cost = usize::from(ca != cb);
+            current[j + 1] = (current[j] + 1)
+                .min(previous[j + 1] + 1)
+                .min(previous[j] + cost);
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    previous[b.len()]
 }
 
 impl ValidationError {
@@ -38,7 +84,17 @@ impl ValidationError {
             expected: expected.into(),
             actual: actual.into(),
             value: None,
+            suggestion: None,
         }
+    }
+
+    /// Attach a "did you mean" suggestion (also appended to the message).
+    pub fn with_suggestion(mut self, suggestion: impl Into<String>) -> Self {
+        let suggestion = suggestion.into();
+        self.message
+            .push_str(&format!(" (did you mean \"{suggestion}\")?"));
+        self.suggestion = Some(suggestion);
+        self
     }
 
     /// Attach the offending value.

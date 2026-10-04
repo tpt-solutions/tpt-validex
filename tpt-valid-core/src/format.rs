@@ -478,7 +478,9 @@ pub fn is_valid_semver(s: &str) -> bool {
     };
     if let Some(b) = build {
         // Build metadata: dot-separated non-empty alphanumeric+hyphen ids.
-        if b.split('.').any(|id| id.is_empty() || !id.chars().all(is_build_char)) {
+        if b.split('.')
+            .any(|id| id.is_empty() || !id.chars().all(is_build_char))
+        {
             return false;
         }
     }
@@ -503,10 +505,7 @@ pub fn is_valid_semver(s: &str) -> bool {
                 return false;
             }
             // Numeric identifiers must not have leading zeros.
-            if id.chars().all(|c| c.is_ascii_digit())
-                && id.len() > 1
-                && id.starts_with('0')
-            {
+            if id.chars().all(|c| c.is_ascii_digit()) && id.len() > 1 && id.starts_with('0') {
                 return false;
             }
         }
@@ -639,7 +638,8 @@ fn parse_duration_components(s: &str, mut unit: impl FnMut(char) -> bool) -> boo
 
 fn is_positive_number(s: &str) -> bool {
     !s.is_empty()
-        && s.chars().all(|c| c.is_ascii_digit() || c == '.' || c == ',')
+        && s.chars()
+            .all(|c| c.is_ascii_digit() || c == '.' || c == ',')
         && s.chars().any(|c| c.is_ascii_digit())
 }
 
@@ -690,24 +690,25 @@ fn digits_at(b: &[u8], start: usize, count: usize) -> bool {
     b[start..start + count].iter().all(u8::is_ascii_digit)
 }
 
-
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn format_keyword_roundtrip() {
         for (kw, f) in format_keyword_map() {
             assert_eq!(Format::from_keyword(kw), Some(*f), "keyword {kw}");
-            assert_eq!(f.keyword(), if *kw == "url" || *kw == "iri" {
-                "uri"
-            } else if *kw == "datetime" {
-                "date-time"
-            } else if *kw == "idn-hostname" {
-                "hostname"
-            } else {
-                kw
-            });
+            assert_eq!(
+                f.keyword(),
+                if *kw == "url" || *kw == "iri" {
+                    "uri"
+                } else if *kw == "datetime" {
+                    "date-time"
+                } else if *kw == "idn-hostname" {
+                    "hostname"
+                } else {
+                    kw
+                }
+            );
         }
         assert_eq!(Format::from_keyword("nope"), None);
     }
@@ -936,7 +937,7 @@ mod tests {
     fn time_format() {
         for s in [
             "00:00:00Z",
-            "23:59:60Z",       // leap second
+            "23:59:60Z", // leap second
             "12:34:56.789+05:30",
             "01:02:03-08:00",
             "12:00:00z",
@@ -976,14 +977,8 @@ mod tests {
             assert!(is_valid_duration(s), "valid: {s}");
         }
         for s in [
-            "",
-            "P",
-            "PT",
-            "1Y",
-            "P1D2M", // order violation
-            "P1Q",
-            "PW",
-            "P1",
+            "", "P", "PT", "1Y", "P1D2M", // order violation
+            "P1Q", "PW", "P1",
         ] {
             assert!(!is_valid_duration(s), "invalid: {s}");
         }
@@ -1000,7 +995,14 @@ mod tests {
         ] {
             assert!(is_valid_phone(s), "valid: {s}");
         }
-        for s in ["", "4155550123", "+", "+1234", "+12345678901234567890", "abc"] {
+        for s in [
+            "",
+            "4155550123",
+            "+",
+            "+1234",
+            "+12345678901234567890",
+            "abc",
+        ] {
             assert!(!is_valid_phone(s), "invalid: {s}");
         }
     }

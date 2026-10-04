@@ -1,0 +1,7 @@
+- id: validex-check
+  name: validex check
+  description: Validate data files against their JSON Schema with tpt-validex
+  entry: validex check
+  language: rust
+  files: \.(json|jsonl|ndjson|csv)$
+  args: [--quiet]

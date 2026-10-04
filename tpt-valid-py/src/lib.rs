@@ -279,7 +279,11 @@ impl Validator {
     fn is_valid(&self, py: Python<'_>, data: &Bound<'_, PyAny>) -> PyResult<bool> {
         let value = py_to_value_fast(py, data)?;
         let opts = self.build_opts(py);
-        Ok(tpt_valid_core::validate_value(self.inner.root(), &value, &opts))
+        Ok(tpt_valid_core::validate_value(
+            self.inner.root(),
+            &value,
+            &opts,
+        ))
     }
 
     /// Validate a list of objects in parallel. Returns a list of
@@ -312,9 +316,8 @@ impl Validator {
             }
         };
         let opts = self.build_opts(py);
-        let outcomes = py.detach(move || {
-            tpt_valid_core::validate_batch(self.inner.root(), &values, &opts)
-        });
+        let outcomes =
+            py.detach(move || tpt_valid_core::validate_batch(self.inner.root(), &values, &opts));
         Ok(outcomes
             .into_iter()
             .map(|outcome| BatchResult {
@@ -360,13 +363,7 @@ impl Validator {
                 let mut valid_out = BufWriter::new(File::create(v).map_err(io_err)?);
                 let mut errors_out = BufWriter::new(File::create(e).map_err(io_err)?);
                 self.inner
-                    .validate_csv_to(
-                        reader,
-                        &mut valid_out,
-                        &mut errors_out,
-                        &dialect,
-                        &opts,
-                    )
+                    .validate_csv_to(reader, &mut valid_out, &mut errors_out, &dialect, &opts)
                     .map_err(flow_err)?
             }
             (Some(v), None) => {
@@ -414,10 +411,7 @@ impl Validator {
                     .validate_jsonl_to(reader, &mut errors_out, &opts)
                     .map_err(io_err)?
             }
-            None => self
-                .inner
-                .validate_jsonl(reader, &opts)
-                .map_err(io_err)?,
+            None => self.inner.validate_jsonl(reader, &opts).map_err(io_err)?,
         };
         let dict = PyDict::new(py);
         dict.set_item("total_lines", stats.total_lines)?;
@@ -460,11 +454,46 @@ impl BatchResult {
     }
 }
 
+/// Build an LLM repair prompt for a failed validation: given the schema,
+/// the rejected document and its error list (as returned by
+/// `Validator.validate`), return instructions a model can act on.
+#[pyfunction]
+fn repair_prompt(schema: &str, data: &str, errors: Vec<Bound<'_, PyAny>>) -> PyResult<String> {
+    let mut collected = Vec::new();
+    for error in &errors {
+        let path = error
+            .get_item("path")
+            .ok()
+            .and_then(|v| v.extract::<String>().ok())
+            .unwrap_or_default();
+        let message = error
+            .get_item("message")
+            .ok()
+            .and_then(|v| v.extract::<String>().ok())
+            .unwrap_or_default();
+        let expected = error
+            .get_item("expected")
+            .ok()
+            .and_then(|v| v.extract::<String>().ok())
+            .unwrap_or_default();
+        let mut validation_error =
+            tpt_valid_core::ValidationError::new(path, message, expected, "");
+        if let Ok(suggestion) = error.get_item("suggestion") {
+            if let Ok(s) = suggestion.extract::<String>() {
+                validation_error = validation_error.with_suggestion(s);
+            }
+        }
+        collected.push(validation_error);
+    }
+    Ok(tpt_valid_core::repair_prompt(schema, data, &collected))
+}
+
 /// tpt-validex: validate millions of records per second, in every language.
 #[pymodule]
 fn tpt_validex(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Validator>()?;
     m.add_class::<BatchResult>()?;
+    m.add_function(wrap_pyfunction!(repair_prompt, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

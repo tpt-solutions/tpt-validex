@@ -10,7 +10,9 @@ published npm package is `tpt-validex`.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+- `Validator.registerFormat(name, fn)` — JS custom format assertions.
+
 
 ## [0.1.0] - 2026-09-29
 

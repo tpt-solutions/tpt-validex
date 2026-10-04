@@ -9,7 +9,23 @@ Version numbers are shared across the whole
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+- `$ref` support: local `#/...` JSON-Pointers (percent-decoded), `#anchor`
+fragments (`$anchor`, `#`-form `$id`), and cross-document refs via
+`SchemaRegistry` (`Validator::new_with`). Recursive refs are detected and
+rejected.
+- `SchemaCache`: LRU eviction (was clear-on-overflow), keys hashed.
+- Depth limits: `json::from_str_with_limit` / `MAX_SCHEMA_DEPTH` guard the
+reader and AST parser against stack exhaustion (100k-deep regression
+tests).
+### Fixed
+- `non_negative_usize` accepts integral floats (`minItems: 1.0`).
+- `minContains > maxContains` is an unsatisfiable schema, not a compile
+error (per spec).
+### Changed
+- Unknown `format` keywords now compile to runtime custom-format checks
+(no-op unless registered) with an informative warning.
+
 
 ## [0.1.0] - 2026-09-29
 

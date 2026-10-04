@@ -50,6 +50,13 @@ export interface ValidationStats {
 export declare class Validator {
   constructor(schema: JsonSchema);
   static fromJson(schema: string): Validator;
+  /**
+   * Register a custom format assertion for a non-built-in `format` name.
+   * The function receives the string under test and its truthiness decides
+   * validity. Pass `undefined` to unregister. Unregistered custom formats
+   * are ignored, matching JSON Schema annotation semantics.
+   */
+  registerFormat(name: string, fn: ((value: string) => boolean) | undefined): void;
   validate(data: unknown): ValidateResult;
   isValid(data: unknown): boolean;
   validateBatch(batch: unknown[]): BatchResult[];

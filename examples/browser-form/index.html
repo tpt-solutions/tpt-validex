@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>tpt-validex — client-side form validation</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 28rem; margin: 3rem auto; }
+    label { display: block; margin-top: 1rem; }
+    input { width: 100%; padding: .4rem; }
+    .error { color: #b00020; font-size: .85rem; margin-top: .2rem; }
+    .ok { color: #0a7d28; }
+  </style>
+</head>
+<body>
+  <h1>Signup</h1>
+  <form id="form">
+    <label>Name <input name="name" autocomplete="name" /></label>
+    <div class="error" id="err-name"></div>
+    <label>Age <input name="age" type="number" /></label>
+    <div class="error" id="err-age"></div>
+    <label>Email <input name="email" type="email" /></label>
+    <div class="error" id="err-email"></div>
+    <p id="status"></p>
+  </form>
+
+  <script type="module">
+    import init, { Validator } from "../../tpt-valid-wasm/pkg/tpt_valid_wasm.js";
+
+    const SCHEMA = {
+      type: "object",
+      properties: {
+        name: { type: "string", minLength: 2 },
+        age: { type: "integer", minimum: 13, maximum: 120 },
+        email: { type: "string", format: "email" },
+      },
+      required: ["name", "age"],
+    };
+
+    await init();
+    const validator = new Validator(SCHEMA);
+
+    const form = document.getElementById("form");
+    form.addEventListener("input", () => {
+      const data = Object.fromEntries(new FormData(form).entries());
+      const { isValid, errors } = validator.validate(data);
+      for (const field of ["name", "age", "email"]) {
+        document.getElementById(`err-${field}`).textContent = "";
+      }
+      for (const error of errors) {
+        const field = error.path.replace(/^\$\./, "");
+        document.getElementById(`err-${field}`).textContent = error.message;
+      }
+      document.getElementById("status").textContent = isValid
+        ? "✓ valid"
+        : "";
+      document.getElementById("status").className = isValid ? "ok" : "";
+    });
+  </script>
+</body>
+</html>

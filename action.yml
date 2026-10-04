@@ -1,0 +1,48 @@
+name: 'tpt-validex check'
+description: >
+  Validate data files against a JSON Schema with tpt-validex and annotate
+  the pull request with SARIF results. The repository must contain
+  scripts/validate-glob.sh (shipped with tpt-validex).
+author: 'TPT Solutions'
+branding:
+  icon: 'check-circle'
+  color: 'blue'
+
+inputs:
+  schema:
+    description: 'Path to the JSON Schema file'
+    required: true
+  files:
+    description: 'Space-separated globs of data files (json/jsonl/csv)'
+    required: true
+  fail-on-invalid:
+    description: 'Fail the step when any record is invalid (true/false)'
+    required: false
+    default: 'true'
+  sarif-upload:
+    description: 'Upload results as SARIF to GitHub code scanning'
+    required: false
+    default: 'false'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install validex
+      shell: bash
+      run: cargo install tpt-valid-cli
+    - name: Validate
+      shell: bash
+      run: |
+        set +e
+        if ! bash scripts/validate-glob.sh \
+          "${{ inputs.schema }}" \
+          "${{ inputs.fail-on-invalid }}" \
+          ${{ inputs.files }}; then
+          echo "::error::tpt-validex found invalid records"
+          exit 1
+        fi
+    - name: Upload SARIF
+      if: inputs.sarif-upload == 'true'
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: validex-results.sarif

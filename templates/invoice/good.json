@@ -1,0 +1,1 @@
+{"invoice_number": "INV-2026-000042", "issue_date": "2026-10-01", "due_date": "2026-10-31", "supplier_vat": "DE123456789", "lines": [{"description": "Consulting", "net_amount": 1000.0, "tax_rate": 0.19}], "total_amount": 1190.0}

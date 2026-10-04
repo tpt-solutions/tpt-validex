@@ -63,6 +63,10 @@ pub enum IrOp {
     MinLength(usize),
     /// `maxLength`
     MaxLength(usize),
+    /// `minProperties`
+    MinProperties(usize),
+    /// `maxProperties`
+    MaxProperties(usize),
     /// `pattern` (pre-compiled — spec §4.2: "pre-compile regex")
     Pattern(Regex),
     /// `enum`
@@ -154,6 +158,7 @@ fn prune_by_type(node: &mut IrSchema) {
             | IrOp::Pattern(_)
             | IrOp::Format(_)
             | IrOp::CustomFormat(_) => string,
+            IrOp::MinProperties(_) | IrOp::MaxProperties(_) => object,
             IrOp::Items { .. }
             | IrOp::PrefixItems { .. }
             | IrOp::UniqueItems

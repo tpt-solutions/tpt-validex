@@ -44,6 +44,7 @@ pub struct tpt_valid_result {
 /// C callback asserting a custom `format` value. Return non-zero when
 /// `value` is valid. Must be thread-safe: it may be invoked concurrently
 /// from batch/streaming validation.
+#[allow(non_camel_case_types)] // C ABI naming
 pub type tpt_valid_format_cb =
     unsafe extern "C" fn(user_data: *mut c_void, value: *const c_char) -> c_int;
 

@@ -106,6 +106,12 @@ fn build_object_ir(obj: &ObjectAst, warnings: &mut Vec<Warning>) -> Result<IrSch
     if let Some(n) = obj.max_length {
         ops.push(IrOp::MaxLength(n));
     }
+    if let Some(n) = obj.min_properties {
+        ops.push(IrOp::MinProperties(n));
+    }
+    if let Some(n) = obj.max_properties {
+        ops.push(IrOp::MaxProperties(n));
+    }
     if let Some(p) = &obj.pattern {
         let re = Regex::new(p)
             .map_err(|e| SchemaError::semantic("pattern", format!("invalid regex: {e}")))?;
@@ -244,11 +250,18 @@ fn build_object_ir(obj: &ObjectAst, warnings: &mut Vec<Warning>) -> Result<IrSch
                 IrAdditional::Schema(Box::new(build_ir(s, warnings)?))
             }
         };
-        let unevaluated = match &obj.unevaluated_properties {
-            None | Some(AdditionalAst::Schema(SchemaAst::Always)) => IrAdditional::Allow,
-            Some(AdditionalAst::Forbid) => IrAdditional::Forbid,
-            Some(AdditionalAst::Schema(s)) => {
-                IrAdditional::Schema(Box::new(build_ir(s, warnings)?))
+        // `additionalProperties` (boolean or schema) evaluates and annotates
+        // every key it applies to, so a sibling `unevaluatedProperties` in
+        // the same schema object has nothing left to constrain.
+        let unevaluated = if obj.additional_properties.is_some() {
+            IrAdditional::Allow
+        } else {
+            match &obj.unevaluated_properties {
+                None | Some(AdditionalAst::Schema(SchemaAst::Always)) => IrAdditional::Allow,
+                Some(AdditionalAst::Forbid) => IrAdditional::Forbid,
+                Some(AdditionalAst::Schema(s)) => {
+                    IrAdditional::Schema(Box::new(build_ir(s, warnings)?))
+                }
             }
         };
         ops.push(IrOp::Object {
@@ -505,6 +518,8 @@ fn lower_op(op: &IrOp) -> ValidationNode {
         IrOp::MultipleOf(m) => ValidationNode::CheckMultipleOf(*m),
         IrOp::MinLength(n) => ValidationNode::CheckMinLength(*n),
         IrOp::MaxLength(n) => ValidationNode::CheckMaxLength(*n),
+        IrOp::MinProperties(n) => ValidationNode::CheckMinProperties(*n),
+        IrOp::MaxProperties(n) => ValidationNode::CheckMaxProperties(*n),
         IrOp::Pattern(re) => ValidationNode::CheckPattern(Box::new(re.clone())),
         IrOp::Enum(set) => ValidationNode::CheckEnum(set.clone()),
         IrOp::Const(v) => ValidationNode::CheckConst(v.clone()),
@@ -551,9 +566,7 @@ fn lower_op(op: &IrOp) -> ValidationNode {
             unevaluated: match unevaluated {
                 IrAdditional::Allow => None,
                 IrAdditional::Forbid => Some(AdditionalProperties::Forbid),
-                IrAdditional::Schema(s) => {
-                    Some(AdditionalProperties::Schema(Box::new(lower(s))))
-                }
+                IrAdditional::Schema(s) => Some(AdditionalProperties::Schema(Box::new(lower(s)))),
             },
             required: required.clone(),
         }),
@@ -870,8 +883,8 @@ mod tests {
         // Unregistered: no-op (annotation semantics).
         assert!(validate(&node, &json!("anything"), &ValidationOptions::default()).is_empty());
         // Registered: enforced.
-        let opts = ValidationOptions::default()
-            .with_format("internal-id", |s| s.starts_with("ID-"));
+        let opts =
+            ValidationOptions::default().with_format("internal-id", |s| s.starts_with("ID-"));
         assert!(validate(&node, &json!("ID-1234"), &opts).is_empty());
         assert_eq!(validate(&node, &json!("nope"), &opts).len(), 1);
         // Non-strings are exempt (format applies to strings only).

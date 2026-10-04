@@ -749,12 +749,17 @@ fn check_object_ex(
         }
         if !map.contains_key(key) {
             path.push_field(key);
-            out.push(ValidationError::new(
+            let mut error = ValidationError::new(
                 path.as_str(),
                 format!("Missing required property \"{key}\""),
                 "required",
                 "missing",
-            ));
+            );
+            // A missing required key is often a typo of a present key.
+            if let Some(suggestion) = crate::error::did_you_mean(key, &present_keys(map)) {
+                error = error.with_suggestion(suggestion);
+            }
+            out.push(error);
             path.pop();
         }
     }
@@ -815,8 +820,14 @@ fn check_object_ex(
     }
 }
 
+/// The keys present on `map` (bounded, for "did you mean" candidates).
+fn present_keys(map: &serde_json::Map<String, Value>) -> Vec<String> {
+    map.keys().cloned().collect()
+}
+
 /// Apply an `additionalProperties`-style rule to the keys not covered by
 /// `properties` / `patternProperties`. `keyword` names the rule in errors.
+#[allow(clippy::too_many_arguments)] // mirrors the recursive `check` shape
 fn apply_key_rule(
     rule: &AdditionalProperties,
     shape: &ObjectShape,
@@ -843,15 +854,24 @@ fn apply_key_rule(
             AdditionalProperties::Allow => unreachable!("caller checked for Allow"),
             AdditionalProperties::Forbid => {
                 path.push_field(key);
-                out.push(
-                    ValidationError::new(
-                        path.as_str(),
-                        format!("Unknown property \"{key}\" is not allowed ({keyword})"),
-                        keyword,
-                        "unknown property",
-                    )
-                    .with_value(v.clone()),
-                );
+                let mut error = ValidationError::new(
+                    path.as_str(),
+                    format!("Unknown property \"{key}\" is not allowed ({keyword})"),
+                    keyword,
+                    "unknown property",
+                )
+                .with_value(v.clone());
+                // Suggest the declared property with the closest name.
+                let candidates: Vec<String> = shape
+                    .properties
+                    .iter()
+                    .map(|(n, _)| n.clone())
+                    .chain(shape.required.iter().cloned())
+                    .collect();
+                if let Some(suggestion) = crate::error::did_you_mean(key, &candidates) {
+                    error = error.with_suggestion(suggestion);
+                }
+                out.push(error);
                 path.pop();
             }
             AdditionalProperties::Schema(sub) => {
@@ -1193,7 +1213,8 @@ mod tests {
 
     #[test]
     fn contains_keyword() {
-        let node = ValidationNode::CheckContains(Box::new(ValidationNode::CheckMinimum(5.0)), 1, None);
+        let node =
+            ValidationNode::CheckContains(Box::new(ValidationNode::CheckMinimum(5.0)), 1, None);
         assert!(node_errs(&node, json!([1, 6])).is_empty());
         assert_eq!(node_errs(&node, json!([1, 2])).len(), 1);
         // applies to arrays only
@@ -1217,7 +1238,10 @@ mod tests {
             "above maxContains"
         );
         let errs = node_errs(&node, json!(["a", "b", 1]));
-        assert_eq!(errs[0].message, "Expected at least 2 array item(s) to match the `contains` schema, got 1");
+        assert_eq!(
+            errs[0].message,
+            "Expected at least 2 array item(s) to match the `contains` schema, got 1"
+        );
     }
 
     #[test]
@@ -1231,9 +1255,16 @@ mod tests {
             None,
         );
         assert!(node_errs(&node, json!(["a", 1])).is_empty());
-        assert!(node_errs(&node, json!(["a"])).is_empty(), "short tuples pass");
+        assert!(
+            node_errs(&node, json!(["a"])).is_empty(),
+            "short tuples pass"
+        );
         assert!(node_errs(&node, json!([])).is_empty());
-        assert_eq!(node_errs(&node, json!([1, 2])).len(), 1, "wrong type at [0]");
+        assert_eq!(
+            node_errs(&node, json!([1, 2])).len(),
+            1,
+            "wrong type at [0]"
+        );
         let errs = node_errs(&node, json!(["a", 2, "extra"]));
         assert_eq!(errs.len(), 0, "extra items unconstrained without items");
 
@@ -1299,10 +1330,7 @@ mod tests {
     fn unevaluated_properties_shape() {
         use crate::node::AdditionalProperties;
         let shape = ObjectShape {
-            properties: vec![(
-                "name".into(),
-                ValidationNode::CheckType(DataType::String),
-            )],
+            properties: vec![("name".into(), ValidationNode::CheckType(DataType::String))],
             unevaluated: Some(AdditionalProperties::Forbid),
             ..Default::default()
         };

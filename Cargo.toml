@@ -4,6 +4,7 @@ members = [
     "tpt-valid-core",
     "tpt-valid-schema",
     "tpt-valid-parser",
+    "tpt-valid-cli",
     "tpt-valid-ffi",
     "tpt-valid-py",
     "tpt-valid-wasm",

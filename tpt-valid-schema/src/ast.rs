@@ -69,6 +69,10 @@ pub struct ObjectAst {
     pub dependent_schemas: Vec<(String, SchemaAst)>,
     /// `propertyNames`
     pub property_names: Option<Box<SchemaAst>>,
+    /// `minProperties`
+    pub min_properties: Option<usize>,
+    /// `maxProperties`
+    pub max_properties: Option<usize>,
     /// `minLength`
     pub min_length: Option<usize>,
     /// `maxLength`
@@ -242,8 +246,12 @@ impl RefCtx<'_> {
     /// context (ref targets are usually small; cloning happens once per
     /// expansion site).
     fn resolve(&self, reference: &str) -> Result<Value, SchemaError> {
+        if reference == "#" {
+            return Ok(self.root.clone());
+        }
         if reference.starts_with("#/") {
-            return resolve_pointer(self.root, &reference[1..], reference).cloned();
+            let pointer = percent_decode(&reference[1..]);
+            return resolve_pointer(self.root, &pointer, reference).cloned();
         }
         if let Some(target) = self.anchors.get(reference) {
             return Ok((*target).clone());
@@ -271,9 +279,32 @@ impl RefCtx<'_> {
         })?;
         match fragment {
             None | Some("") => Ok(doc.clone()),
-            Some(frag) => resolve_pointer(doc, frag, reference).cloned(),
+            Some(frag) => resolve_pointer(doc, &percent_decode(frag), reference).cloned(),
         }
     }
+}
+
+/// Percent-decode a URI fragment (`%XX` sequences); invalid escapes pass
+/// through unchanged.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 3 <= bytes.len() {
+            let hex = bytes.get(i + 1..i + 3);
+            if let Some(hex) = hex {
+                if let Ok(byte) = u8::from_str_radix(std::str::from_utf8(hex).unwrap_or(""), 16) {
+                    out.push(byte);
+                    i += 3;
+                    continue;
+                }
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Resolve an RFC 6901 JSON Pointer (without the leading '#') in `doc`.
@@ -300,7 +331,9 @@ fn resolve_pointer<'a>(
                 let idx: usize = token.parse().map_err(|_| {
                     SchemaError::unsupported(
                         "$ref",
-                        format!("unresolved reference \"{reference}\": \"{token}\" is not an index"),
+                        format!(
+                            "unresolved reference \"{reference}\": \"{token}\" is not an index"
+                        ),
                     )
                 })?;
                 items.get(idx).ok_or_else(|| {
@@ -417,8 +450,8 @@ fn parse_schema_at(
                 }
                 let resolved = ctx.resolve(reference)?;
                 ctx.in_flight.push(reference.clone());
-                let target =
-                    parse_schema_at(&resolved, ctx, depth + 1).map_err(|e| ref_context(e, reference))?;
+                let target = parse_schema_at(&resolved, ctx, depth + 1)
+                    .map_err(|e| ref_context(e, reference))?;
                 ctx.in_flight.pop();
                 // `$ref` composes with sibling keywords as a conjunction
                 // (Draft 2020-12); the compiler folds `allOf` members.
@@ -534,6 +567,20 @@ fn parse_object(
     if let Some(v) = map.get("maxItems") {
         ast.max_items = Some(non_negative_usize(v, "maxItems")?);
     }
+    if let Some(v) = map.get("minProperties") {
+        ast.min_properties = Some(non_negative_usize(v, "minProperties")?);
+    }
+    if let Some(v) = map.get("maxProperties") {
+        ast.max_properties = Some(non_negative_usize(v, "maxProperties")?);
+    }
+    if let (Some(min), Some(max)) = (ast.min_properties, ast.max_properties) {
+        if min > max {
+            return Err(SchemaError::semantic(
+                "minProperties",
+                "minProperties must be <= maxProperties",
+            ));
+        }
+    }
     if let Some(v) = map.get("uniqueItems") {
         ast.unique_items = Some(
             v.as_bool()
@@ -548,14 +595,6 @@ fn parse_object(
     }
     if let Some(v) = map.get("maxContains") {
         ast.max_contains = Some(non_negative_usize(v, "maxContains")?);
-    }
-    if let (Some(min), Some(max)) = (ast.min_contains, ast.max_contains) {
-        if min > max {
-            return Err(SchemaError::semantic(
-                "minContains",
-                "minContains must be <= maxContains",
-            ));
-        }
     }
     if let Some(v) = map.get("dependentRequired") {
         let m = v
@@ -702,9 +741,14 @@ fn validate_type_keyword(s: &str) -> Result<(), SchemaError> {
 }
 
 fn non_negative_usize(v: &Value, keyword: &str) -> Result<usize, SchemaError> {
-    let n = v
-        .as_u64()
-        .ok_or_else(|| SchemaError::semantic(keyword, "must be a non-negative integer"))?;
+    let n = v.as_u64().or_else(|| {
+        // Accept integral floats (`1.0`): JSON has one number type, and the
+        // official test suite writes bounds like `minItems: 1.0`.
+        v.as_f64()
+            .filter(|f| f.is_finite() && *f >= 0.0 && f.fract() == 0.0)
+            .map(|f| f as u64)
+    });
+    let n = n.ok_or_else(|| SchemaError::semantic(keyword, "must be a non-negative integer"))?;
     usize::try_from(n).map_err(|_| SchemaError::semantic(keyword, "value too large"))
 }
 
@@ -792,7 +836,9 @@ mod tests {
             }
         }))
         .unwrap();
-        let SchemaAst::Object(o) = ast else { panic!("object") };
+        let SchemaAst::Object(o) = ast else {
+            panic!("object")
+        };
         assert_eq!(o.properties.len(), 1);
         // The ref target became a conjunction member of the property schema.
         let SchemaAst::Object(inner) = &o.properties[0].1 else {
@@ -830,7 +876,9 @@ mod tests {
             }
         }))
         .unwrap();
-        let SchemaAst::Object(o) = ast else { panic!("object") };
+        let SchemaAst::Object(o) = ast else {
+            panic!("object")
+        };
         assert_eq!(o.properties[0].0, "a");
     }
 
@@ -840,13 +888,17 @@ mod tests {
         registry
             .insert("https://example.com/x.json", r#"{"type": "string"}"#)
             .unwrap();
-        let ast = parse_schema_with(&json!({"$ref": "https://example.com/x.json"}), &registry)
-            .unwrap();
-        let SchemaAst::Object(o) = ast else { panic!("object") };
+        let ast =
+            parse_schema_with(&json!({"$ref": "https://example.com/x.json"}), &registry).unwrap();
+        let SchemaAst::Object(o) = ast else {
+            panic!("object")
+        };
         // The ref target is a conjunction member of the root schema.
         assert!(o.types.is_empty());
         assert_eq!(o.all_of.len(), 1);
-        let SchemaAst::Object(target) = &o.all_of[0] else { panic!("target object") };
+        let SchemaAst::Object(target) = &o.all_of[0] else {
+            panic!("target object")
+        };
         assert_eq!(target.types, vec!["string".to_string()]);
 
         // Unknown external ref errors helpfully.

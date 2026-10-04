@@ -26,6 +26,15 @@ cd tpt-valid-wasm && npm run build:node && node ../benches/compare/compare_js.mj
 | Schema compilation | < 10 ms | **< 1 µs** small; **~3 ms** 9-keyword schema with regexes | ✅ |
 | Cached schema lookup | — | **~560 ns** | ✅ |
 | Memory (1M objects) | < 50 MB | streaming APIs are O(1) per row; batch is O(batch) | ✅ streaming, ⚠️ batch |
+
+**Memory profiling** (`scripts/profile_memory.py --rows 1000000`, Windows x86_64
+release build, 2026-10-03): the streaming JSONL path peaks at **5.9 MiB
+regardless of row count** (5.9 MiB at 200k / 400k / 1M rows — the process
+high-water mark is flat, confirming O(1)-per-row), while the batch path (a
+1M-element JSON array validated via rayon) peaks at **~895 MiB** — the
+records are materialized, ~152× the streaming footprint. Batch memory is
+inherent to materializing inputs, not to the engine; chunk large arrays at
+the caller for bounded batch memory.
 | Binary size (native FFI cdylib) | < 10 MB | **~1–2 MB** | ✅ |
 | Binary size (WASM) | < 5 MB | **1.36 MB** (pre-`wasm-opt`) | ✅ |
 | Dependency count | < 15 crates | 72 runtime crates (72 incl. transitive) | ❌ not met — see notes |

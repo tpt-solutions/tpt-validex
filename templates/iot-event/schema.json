@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "IoT sensor event",
+  "type": "object",
+  "properties": {
+    "device_id": {"type": "string", "pattern": "^dev-[0-9a-f]{8}$"},
+    "recorded_at": {"type": "string", "format": "date-time"},
+    "metrics": {
+      "type": "object",
+      "propertyNames": {"pattern": "^[a-z_]+$"},
+      "additionalProperties": {"type": "number"}
+    },
+    "battery": {"type": "number", "minimum": 0, "maximum": 100},
+    "firmware": {"type": "string", "format": "semver"}
+  },
+  "required": ["device_id", "recorded_at", "metrics"],
+  "additionalProperties": false
+}

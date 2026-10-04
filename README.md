@@ -21,6 +21,8 @@ written in pure Rust, with native bindings for **Python**, **JavaScript
 - 🌍 **Universal** — one JSON Schema, identical behavior across Python, JavaScript, Go, C++, and Rust.
 - 📜 **JSON Schema (Draft 2020-12 subset)** — documented [compliance matrix](docs/compliance.md), plus an ergonomic compile-time-checked [Rust DSL](docs/dsl.md).
 - 🌊 **Streaming** — validate CSV and JSONL with bounded memory; quarantined rows written to an errors file with line numbers.
+- 🛠️ **A real CLI** — `validex check/infer/diff/watch/profile` with text, JSON, JUnit and SARIF output ([docs/cli.md](docs/cli.md)).
+- 🧭 **Friendly errors** — "did you mean" hints for typos, top failure-pattern clustering for large files, opt-in coercion with a change report, and an LLM repair-prompt helper.
 - 🪶 **Embeddable** — 1.36 MB WASM, ~1–2 MB native cdylib.
 - ⚖️ **Clean licensing** — dual-licensed MIT / Apache-2.0; **no copyleft and no Apache-2.0-only dependencies**, enforced by `cargo deny` + a dedicated audit on every PR.
 
@@ -31,9 +33,23 @@ cargo add validex                 # Rust
 pip install tpt-validex           # Python
 npm install tpt-validex           # JavaScript / WASM
 go get github.com/tpt-solutions/tpt-validex-go   # Go (cgo — see below)
+cargo install tpt-valid-cli       # the `validex` CLI
 ```
 
 ## Quick start
+
+### CLI (60 seconds)
+
+```sh
+validex check user.schema.json users.jsonl        # structured errors, exit 1 on failure
+validex check user.schema.json table.csv --format sarif   # GitHub PR annotations
+validex infer sample.csv > schema.json            # starter schema from sample data
+validex diff v1.schema.json v2.schema.json        # breaking-change report (CI gate)
+validex profile table.csv                         # null rates, distinct counts, hints
+```
+
+See [docs/cli.md](docs/cli.md) for the full surface (watch mode, error
+sinks, JUnit output) and [examples/](examples) for runnable projects.
 
 Schema used in every example:
 
@@ -218,6 +234,7 @@ Every crate has its own README, CHANGELOG, and crates.io keywords/categories.
 | [`tpt-valid-core`](tpt-valid-core/) | Validation state machine, formats, structured errors, batch, CSV/JSONL streaming |
 | [`tpt-valid-schema`](tpt-valid-schema/) | JSON Schema tokenizer → AST → IR → compiler + cache |
 | [`tpt-valid-parser`](tpt-valid-parser/) | JSON parsing (jiter primary, serde_json baseline) |
+| [`tpt-valid-cli`](tpt-valid-cli/) | the `validex` command (check / infer / diff / watch / profile) |
 | [`tpt-valid-ffi`](tpt-valid-ffi/) | C ABI + `tpt_validex.h` |
 | [`tpt-valid-py`](tpt-valid-py/) | Python bindings (PyO3 + maturin) + tests |
 | [`tpt-valid-wasm`](tpt-valid-wasm/) | WASM bindings (wasm-bindgen) + package.json + JS tests |
@@ -232,6 +249,7 @@ validex-macros/         schema! proc macro
 tpt-valid-core/         validation state machine, formats, streaming, batch
 tpt-valid-schema/       JSON Schema tokenizer → AST → IR → compiler + cache
 tpt-valid-parser/       JSON parsing (jiter / serde_json)
+tpt-valid-cli/          the validex command
 tpt-valid-ffi/          C ABI + tpt_validex.h
 tpt-valid-py/           Python bindings (PyO3 + maturin) + tests
 tpt-valid-wasm/         WASM bindings (wasm-bindgen) + package.json + JS tests

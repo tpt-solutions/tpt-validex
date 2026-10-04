@@ -3,11 +3,14 @@
 > Universal High-Performance Data Validator  
 > TPT Solutions · Dual-licensed MIT / Apache-2.0
 
-Status notes (2026-09-29): phases 0–6 and 8 are implemented and tested.
-Deviations from the spec are annotated inline — most notably the parser
-choice (sonic-rs is Apache-2.0-only, not MIT as assumed; jiter replaced it)
-and the performance targets we do not meet (documented honestly in
-`docs/performance.md`).
+Status notes (2026-10-03): phases 0–11 and 13 are implemented and tested;
+phase 12 is complete except for items that need the public repository
+(playground hosting, action-marketplace listing, SchemaStore submission,
+packaging registries). The official JSON-Schema-Test-Suite (Draft 2020-12)
+runs in CI: 884/884 non-skipped cases pass. Deviations from the spec are
+annotated inline — most notably the parser choice (sonic-rs is
+Apache-2.0-only, not MIT as assumed; jiter replaced it) and the performance
+targets we do not meet (documented honestly in `docs/performance.md`).
 
 ---
 
@@ -225,7 +228,7 @@ and the performance targets we do not meet (documented honestly in
 - [x] Comparison benchmark vs `pydantic` (Python) — same dataset (`benches/compare/compare_python.py`; 7–16× vs jsonschema, ~1.4× behind pydantic at the Python boundary)
 - [x] Comparison benchmark vs `zod` (JavaScript) — same dataset (`benches/compare/compare_js.mjs`; zod faster in-process, wasm boundary documented)
 - [x] Comparison benchmark vs `jsonschema` (Python) — same dataset
-- [ ] Memory usage profiling (streaming APIs are O(1) per row by construction; explicit 1M-object RSS profiling not yet scripted)
+- [x] Memory usage profiling — `scripts/profile_memory.py` measures the process high-water mark (`validex memcheck` reads PeakWorkingSet/VmHWM natively): streaming JSONL is flat at **5.9 MiB** from 200k to 1M rows (O(1) confirmed), batch of 1M objects peaks at ~895 MiB (materialized inputs; documented in `docs/performance.md`)
 - [x] Binary size tracking — native (~1–2 MB < 10 MB ✅), WASM (1.36 MB < 5 MB ✅, CI budget check)
 
 ---
@@ -271,48 +274,48 @@ and the performance targets we do not meet (documented honestly in
 
 ## Phase 10: JSON Schema Coverage
 
-- [ ] `$ref` / `$defs` / `definitions` — local `#/...` refs with cycle detection for recursive schemas
-- [ ] `$anchor` and `$id`-relative refs; optional user-supplied schema registry for cross-file refs
-- [ ] `prefixItems` and tuple-form `items`
-- [ ] `dependentRequired` / `dependentSchemas`
-- [ ] `minContains` / `maxContains`
-- [ ] `propertyNames`
-- [ ] `unevaluatedProperties` / `unevaluatedItems`
-- [ ] Vendor the official JSON-Schema-Test-Suite (submodule), run in CI with an allow-list of known skips; publish the pass rate in `docs/compliance.md`
-- [ ] Additional formats: `phone`, `currency`, `iban`, `country-code`, `semver`, `regex`, `json-pointer`, `duration`, `time`
-- [ ] Custom format registration API (Rust, Python, JS, Go)
+- [x] `$ref` / `$defs` / `definitions` — local `#/...` refs (RFC 6901, percent-decoded) with cycle detection; genuinely recursive schemas are detected and rejected with a clear error
+- [x] `$anchor` / `#name` refs (incl. `#`-form `$id`); user-supplied `SchemaRegistry` for cross-file refs (`Validator::new_with`). *$id base-URI resolution (relative/URN refs) is not implemented* — documented in the compliance matrix
+- [x] `prefixItems` and tuple-form `items` (mapped onto `prefixItems`); schema-form `items` constrains the remainder
+- [x] `dependentRequired` / `dependentSchemas`
+- [x] `minContains` / `maxContains` (default min 1; `min > max` compiles to an unsatisfiable check per spec)
+- [x] `propertyNames`
+- [x] `unevaluatedProperties` / `unevaluatedItems` — *partial*: static accounting (same schema object + `allOf` merging; sibling-branch annotations not tracked), documented in the compliance matrix
+- [x] `minProperties` / `maxProperties` (found by the official suite; integral-float bounds like `minItems: 1.0` now accepted)
+- [x] Vendor the official JSON-Schema-Test-Suite (submodule `third-party/JSON-Schema-Test-Suite`), run in CI with a reviewed allow-list; **884/884 non-skipped cases pass (100%)**, 417 skipped with documented reasons — published in `docs/compliance.md`
+- [x] Additional formats: `phone`, `currency`, `iban` (mod-97 checksum), `country-code`, `semver`, `regex`, `json-pointer`, `duration`, `time`
+- [x] Custom format registration API: Rust `ValidationOptions::with_format` / `CustomFormats`, Python `Validator(schema, formats={...})`, JS `validator.registerFormat(name, fn)`, Go `Validator.RegisterFormat`, C `tpt_valid_register_format`
 
 ## Phase 11: CLI (`validex`)
 
-- [ ] New `tpt-valid-cli` crate: `validex check <schema> <data.{json,jsonl,csv}>` with summary output and non-zero exit on failure
-- [ ] `--errors <file>`, `--valid <file>`, `--fail-fast`, `--max-errors`, `--format text|json|junit|sarif`
-- [ ] `validex infer <data>` — generate a starter schema from sample data (reuse CSV inference)
-- [ ] `validex diff old.json new.json` — schema compatibility / breaking-change report
-- [ ] `validex watch` mode and `.validex.toml` config mapping globs to schemas
-- [ ] Distribution: prebuilt release binaries, `cargo install`, `pipx`, `npx`, Homebrew, Scoop
+- [x] New `tpt-valid-cli` crate: `validex check <schema> <data.{json,jsonl,csv}>` with summary output and non-zero exit on failure (top-level JSON arrays validated item-by-item; `--registry` for cross-file `$ref`)
+- [x] `--errors <file>`, `--valid <file>`, `--fail-fast`, `--max-errors`, `--format text|json|junit|sarif`
+- [x] `validex infer <data>` — generate a starter schema from sample data (JSON/JSONL merged per key with bounded recursion; CSV reuses column inference; nullable columns get `null` alternatives)
+- [x] `validex diff old.json new.json` — schema compatibility / breaking-change report (`--format text|json`; exit 1 gates CI data contracts)
+- [x] `validex watch` mode and `.validex.toml` config mapping globs to schemas (mtime polling; dependency-free glob/`toml` subset parsers)
+- [x] Distribution: prebuilt release binaries (release workflow, linux x86_64/aarch64, macOS x86_64/arm64, Windows x86_64) + `cargo install tpt-valid-cli` (`pipx`/`npx`/Homebrew/Scoop need the GitHub repository + registry entries first — see Phase 0)
 
 ## Phase 12: Adoption — Examples, Templates, Playground
 
-- [ ] `examples/` with runnable projects (Makefile/`just run` each): FastAPI request validation, Express middleware, pandas/Polars ETL step, Go HTTP handler, browser form validation (WASM), Streamforge pipeline
-- [ ] `templates/` schema library with good/bad sample data and README each: contact/CRM import, e-commerce orders, invoices, GeoJSON, log lines, IoT events, OpenAPI request bodies
-- [ ] Online playground (static WASM page on GitHub Pages): schema + data panes, live errors, shareable links
-- [ ] Official GitHub Action that validates files in a repo and annotates PRs (SARIF)
-- [ ] `pre-commit` hook definition
-- [ ] Publish schema/meta-schema for editor autocomplete (SchemaStore submission)
-- [ ] README: "60-second start" per language; benchmark table vs `jsonschema`, `fastjsonschema`, `ajv` (extend `benches/compare`)
-- [ ] Migration guide: side-by-side pydantic / zod / ajv snippets; optional `validex convert --from pydantic|zod|ajv`
-- [ ] `CONTRIBUTING.md`, issue templates, `good first issue` labels
+- [x] `examples/` with runnable projects: FastAPI request validation, Express middleware (WASM), pandas ETL step, Go HTTP handler, browser form validation (WASM), Streamforge pipeline (cargo example) — each with a README
+- [x] `templates/` schema library with good/bad sample data and README: contact/CRM, e-commerce orders, invoices, GeoJSON point, log lines, IoT events (all six verified through `validex check`); OpenAPI wrapping documented in `templates/README.md`
+- [x] Playground page source (`playground/index.html`): schema + data panes, live structured errors, all client-side WASM — GitHub Pages hosting needs the repository
+- [x] Official GitHub Action: `action.yml` (composite action → `validex check` with SARIF upload via CodeQL) + `scripts/validate-glob.sh`; marketplace listing needs the repository
+- [x] `pre-commit` hook definition (`.pre-commit-hooks.yaml`)
+- [ ] SchemaStore submission — external PR to schemastore.org once the repository is public
+- [x] README: "60-second" CLI quick start (language quick starts already present); benchmark table vs `jsonschema`/`pydantic`/`zod` (see `docs/performance.md`; ajv/fastjsonschema comparison runs are in `benches/compare`)
+- [x] Migration guide: side-by-side pydantic / zod / jsonschema snippets in `docs/migration.md` (a `validex convert --from pydantic|zod|ajv` remains future work)
+- [x] `CONTRIBUTING.md` + issue templates (`good first issue` labels are set in the repository once created)
 
 ## Phase 13: Innovation / Differentiators
 
-- [ ] Friendlier errors: "did you mean" key suggestions, failing schema path, human-readable summaries
-- [ ] Error clustering in streaming mode: top failure patterns with counts and example rows
-- [ ] Opt-in `coerce` mode (trim, `"1,234"`→`1234`, `yes`→`true`, date normalization) with change report and cleaned-output file
-- [ ] Column profiling (null rates, distinct counts) and tighter-schema suggestions
-- [ ] LLM structured-output validation helper: validate tool-call JSON and generate repair prompts from errors
-- [ ] Data-contract workflow: versioned schemas, compatibility gates in CI
+- [x] Friendlier errors: "did you mean" key suggestions (`ValidationError.suggestion` + Levenshtein matcher, wired into `required` / `additionalProperties` / `unevaluatedProperties`), failing schema path on every error, human-readable text summaries in the CLI
+- [x] Error clustering in streaming mode: `ErrorClusterer` / `ErrorCluster` (pattern = path + expected constraint, counts, first position, example error); `validex check --top-errors N`
+- [x] Opt-in `coerce` mode: `CoerceOptions` / `coerce_value` (trim, `"1,234"`→`1234`, `yes`→`true`, `M/D/YYYY` date normalization, empty→null) with a full change report; `validex check --coerce`
+- [x] Column profiling: `profile_csv` / `ColumnProfile` (null rates, exact distinct counts with bounded samples, type mixes) + tighter-schema suggestions; `validex profile <data.csv>`
+- [x] LLM structured-output helper: `repair_prompt` (Rust core + Python `tpt_validex.repair_prompt`) renders schema + rejected document + errors (incl. suggestions) into a repair prompt
+- [x] Data-contract workflow: `validex diff` compatibility gates in CI + documented recipe (`docs/cli.md` "Data-contract workflow")
 
 ## Existing open items (carried over)
 
-- [ ] Set up GitHub repository and publish Go module (see Phase 0 / Phase 6)
-- [ ] Memory usage profiling script for 1M-object RSS (see Benchmarks)
+- [ ] Set up GitHub repository and publish Go module (see Phase 0 / Phase 6) — requires repo owner/admin access; all workflows, binaries and package configs are ready

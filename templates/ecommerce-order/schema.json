@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "E-commerce order",
+  "type": "object",
+  "properties": {
+    "order_id": {"type": "string", "pattern": "^ORD-[0-9]{8}$"},
+    "placed_at": {"type": "string", "format": "date-time"},
+    "currency": {"type": "string", "format": "currency"},
+    "items": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "sku": {"type": "string", "pattern": "^[A-Z]{3}-[0-9]{4}$"},
+          "quantity": {"type": "integer", "minimum": 1},
+          "unit_price": {"type": "number", "minimum": 0}
+        },
+        "required": ["sku", "quantity", "unit_price"]
+      }
+    },
+    "customer_email": {"type": "string", "format": "email"}
+  },
+  "required": ["order_id", "placed_at", "currency", "items", "customer_email"],
+  "additionalProperties": false
+}

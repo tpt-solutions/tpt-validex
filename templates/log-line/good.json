@@ -1,0 +1,1 @@
+{"timestamp": "2026-10-03T12:00:00Z", "level": "info", "service": "checkout", "trace_id": "1b3e6c9c-3a52-4b1f-9c11-5d2e8f7a1234", "message": "order placed", "fields": {"order_id": "ORD-1"}}

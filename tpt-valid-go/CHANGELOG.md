@@ -11,7 +11,10 @@ module is published as `github.com/tpt-solutions/tpt-validex-go`.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+- `Validator.RegisterFormat(name, fn)` — Go custom format assertions
+(cgo trampoline; `nil` unregisters).
+
 
 ## [0.1.0] - 2026-09-29
 
