@@ -163,7 +163,7 @@ jobs:
           name: validex-${{ matrix.target }}
           path: validex-${{ matrix.target }}.*
       - name: Attach to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: validex-${{ matrix.target }}.*
