@@ -45,7 +45,7 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 rayon = "1.10"
 async-trait = "0.1"
 tokio = { version = "1", features = ["full"] }
-jiter = { version = "0.17", default-features = false, features = ["serde"] }
+jiter = { version = "0.18", default-features = false, features = ["serde"] }
 pyo3 = "0.29"
 # Pinned to the exact wasm-bindgen-cli version installed for JS glue generation.
 wasm-bindgen = "=0.2.129"
